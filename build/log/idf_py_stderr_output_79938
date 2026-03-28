@@ -1,0 +1,4 @@
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp: In function 'void button_task(void*)':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:92:14: warning: variable 'last_tick_ms' set but not used [-Wunused-but-set-variable]
+   92 |     uint32_t last_tick_ms = 0;
+      |              ^~~~~~~~~~~~

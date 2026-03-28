@@ -1,0 +1,100 @@
+In file included from /Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:1:
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:62:1: error: unknown type name 'esp_err_t'
+   62 | esp_err_t ldr_controller_init(void);
+      | ^~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:118:1: error: unknown type name 'esp_err_t'
+  118 | esp_err_t ldr_get_state(ldr_controller_t *controller);
+      | ^~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:125:1: error: unknown type name 'esp_err_t'
+  125 | esp_err_t ldr_controller_deinit(void);
+      | ^~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c: In function 'ldr_controller_init':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:44:5: error: implicit declaration of function 'ESP_RETURN_ON_ERROR' [-Wimplicit-function-declaration]
+   44 |     ESP_RETURN_ON_ERROR(
+      |     ^~~~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:53:9: warning: 'ADC_ATTEN_DB_11' is deprecated [-Wdeprecated-declarations]
+   53 |         .atten = ADC_ATTEN_DB_11,  /* Full range 0-3.3V */
+      |         ^
+In file included from /Users/elvisserem/esp/esp-idf/components/esp_adc/include/esp_adc/adc_oneshot.h:12,
+                 from /Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:4:
+/Users/elvisserem/esp/esp-idf/components/hal/include/hal/adc_types.h:51:5: note: declared here
+   51 |     ADC_ATTEN_DB_11 __attribute__((deprecated)) = ADC_ATTEN_DB_12,  ///<This is deprecated, it behaves the same as `ADC_ATTEN_DB_12`
+      |     ^~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:20:31: error: 'ADC1_CHANNEL_6' undeclared (first use in this function); did you mean 'ADC_CHANNEL_6'?
+   20 | #define LDR_ADC_CHANNEL_1     ADC1_CHANNEL_6    /* GPIO34 */
+      |                               ^~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:57:50: note: in expansion of macro 'LDR_ADC_CHANNEL_1'
+   57 |         adc_oneshot_config_channel(g_adc_handle, LDR_ADC_CHANNEL_1, &config1),
+      |                                                  ^~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:20:31: note: each undeclared identifier is reported only once for each function it appears in
+   20 | #define LDR_ADC_CHANNEL_1     ADC1_CHANNEL_6    /* GPIO34 */
+      |                               ^~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:57:50: note: in expansion of macro 'LDR_ADC_CHANNEL_1'
+   57 |         adc_oneshot_config_channel(g_adc_handle, LDR_ADC_CHANNEL_1, &config1),
+      |                                                  ^~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:65:9: warning: 'ADC_ATTEN_DB_11' is deprecated [-Wdeprecated-declarations]
+   65 |         .atten = ADC_ATTEN_DB_11,  /* Full range 0-3.3V */
+      |         ^
+/Users/elvisserem/esp/esp-idf/components/hal/include/hal/adc_types.h:51:5: note: declared here
+   51 |     ADC_ATTEN_DB_11 __attribute__((deprecated)) = ADC_ATTEN_DB_12,  ///<This is deprecated, it behaves the same as `ADC_ATTEN_DB_12`
+      |     ^~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:21:31: error: 'ADC1_CHANNEL_7' undeclared (first use in this function); did you mean 'ADC_CHANNEL_7'?
+   21 | #define LDR_ADC_CHANNEL_2     ADC1_CHANNEL_7    /* GPIO35 */
+      |                               ^~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:69:50: note: in expansion of macro 'LDR_ADC_CHANNEL_2'
+   69 |         adc_oneshot_config_channel(g_adc_handle, LDR_ADC_CHANNEL_2, &config2),
+      |                                                  ^~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:75:5: error: unknown type name 'adc_cali_curve_fitting_config_t'; did you mean 'adc_cali_line_fitting_config_t'?
+   75 |     adc_cali_curve_fitting_config_t cali_config = {
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |     adc_cali_line_fitting_config_t
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:76:9: error: field name not in record or union initializer
+   76 |         .unit_id = ADC_UNIT_1,
+      |         ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:76:9: note: (near initialization for 'cali_config')
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:77:9: error: field name not in record or union initializer
+   77 |         .atten = ADC_ATTEN_DB_11,
+      |         ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:77:9: note: (near initialization for 'cali_config')
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:77:9: warning: 'ADC_ATTEN_DB_11' is deprecated [-Wdeprecated-declarations]
+/Users/elvisserem/esp/esp-idf/components/hal/include/hal/adc_types.h:51:5: note: declared here
+   51 |     ADC_ATTEN_DB_11 __attribute__((deprecated)) = ADC_ATTEN_DB_12,  ///<This is deprecated, it behaves the same as `ADC_ATTEN_DB_12`
+      |     ^~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:77:18: warning: excess elements in scalar initializer
+   77 |         .atten = ADC_ATTEN_DB_11,
+      |                  ^~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:77:18: note: (near initialization for 'cali_config')
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:78:9: error: field name not in record or union initializer
+   78 |         .bitwidth = ADC_BITWIDTH_12,
+      |         ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:78:9: note: (near initialization for 'cali_config')
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:78:21: warning: excess elements in scalar initializer
+   78 |         .bitwidth = ADC_BITWIDTH_12,
+      |                     ^~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:78:21: note: (near initialization for 'cali_config')
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:82:9: error: implicit declaration of function 'adc_cali_create_scheme_curve_fitting'; did you mean 'adc_cali_create_scheme_line_fitting'? [-Wimplicit-function-declaration]
+   82 |         adc_cali_create_scheme_curve_fitting(&cali_config, &g_adc_cali_handle),
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         adc_cali_create_scheme_line_fitting
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c: In function 'ldr_task':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:20:31: error: 'ADC1_CHANNEL_6' undeclared (first use in this function); did you mean 'ADC_CHANNEL_6'?
+   20 | #define LDR_ADC_CHANNEL_1     ADC1_CHANNEL_6    /* GPIO34 */
+      |                               ^~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:127:40: note: in expansion of macro 'LDR_ADC_CHANNEL_1'
+  127 |         adc_oneshot_read(g_adc_handle, LDR_ADC_CHANNEL_1, &adc_raw_1);
+      |                                        ^~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.h:21:31: error: 'ADC1_CHANNEL_7' undeclared (first use in this function); did you mean 'ADC_CHANNEL_7'?
+   21 | #define LDR_ADC_CHANNEL_2     ADC1_CHANNEL_7    /* GPIO35 */
+      |                               ^~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:132:40: note: in expansion of macro 'LDR_ADC_CHANNEL_2'
+  132 |         adc_oneshot_read(g_adc_handle, LDR_ADC_CHANNEL_2, &adc_raw_2);
+      |                                        ^~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c: In function 'ldr_controller_deinit':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:295:9: error: implicit declaration of function 'adc_cali_delete_scheme_curve_fitting'; did you mean 'adc_cali_delete_scheme_line_fitting'? [-Wimplicit-function-declaration]
+  295 |         adc_cali_delete_scheme_curve_fitting(g_adc_cali_handle);
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         adc_cali_delete_scheme_line_fitting
+make[2]: *** [esp-idf/ldr_controller/CMakeFiles/__idf_ldr_controller.dir/ldr_controller.c.obj] Error 1
+make[1]: *** [esp-idf/ldr_controller/CMakeFiles/__idf_ldr_controller.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+make: *** [all] Error 2

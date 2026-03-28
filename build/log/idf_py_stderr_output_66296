@@ -1,0 +1,8 @@
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:5:10: fatal error: esp_spi_flash.h: No such file or directory
+    5 | #include "esp_spi_flash.h"
+      |          ^~~~~~~~~~~~~~~~~
+compilation terminated.
+make[2]: *** [esp-idf/main/CMakeFiles/__idf_main.dir/main.cpp.obj] Error 1
+make[1]: *** [esp-idf/main/CMakeFiles/__idf_main.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+make: *** [all] Error 2

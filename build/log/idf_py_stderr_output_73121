@@ -1,0 +1,36 @@
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:31:38: error: invalid conversion from 'int' to 'OperatingMode' [-fpermissive]
+   31 | static ModeController g_mode_ctrl = {0};
+      |                                      ^
+      |                                      |
+      |                                      int
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:31:39: warning: missing initializer for member 'ModeController::menu_selected_index' [-Wmissing-field-initializers]
+   31 | static ModeController g_mode_ctrl = {0};
+      |                                       ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:32:40: error: invalid conversion from 'int' to 'MotorState' [-fpermissive]
+   32 | static MotorController g_motor_ctrl = {0};
+      |                                        ^
+      |                                        |
+      |                                        int
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:32:41: warning: missing initializer for member 'MotorController::desired_state' [-Wmissing-field-initializers]
+   32 | static MotorController g_motor_ctrl = {0};
+      |                                         ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:32:41: warning: missing initializer for member 'MotorController::state_changed' [-Wmissing-field-initializers]
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:33:43: warning: missing initializer for member 'ButtonState::press_start_time' [-Wmissing-field-initializers]
+   33 | static ButtonController g_button_ctrl = {0};
+      |                                           ^
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:33:43: warning: missing initializer for member 'ButtonState::pin_currently_low' [-Wmissing-field-initializers]
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:33:43: warning: missing initializer for member 'ButtonState::last_action' [-Wmissing-field-initializers]
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:33:43: warning: missing initializer for member 'ButtonController::btn_down' [-Wmissing-field-initializers]
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:33:43: warning: missing initializer for member 'ButtonController::btn_enter' [-Wmissing-field-initializers]
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp: In function 'esp_err_t gpio_init()':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:53:5: error: 'ESP_RETURN_ON_ERROR' was not declared in this scope
+   53 |     ESP_RETURN_ON_ERROR(
+      |     ^~~~~~~~~~~~~~~~~~~
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp: In function 'esp_err_t system_init()':
+/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/main/main.cpp:303:5: error: 'ESP_RETURN_ON_ERROR' was not declared in this scope
+  303 |     ESP_RETURN_ON_ERROR(gpio_init(), TAG, "GPIO init failed");
+      |     ^~~~~~~~~~~~~~~~~~~
+make[2]: *** [esp-idf/main/CMakeFiles/__idf_main.dir/main.cpp.obj] Error 1
+make[1]: *** [esp-idf/main/CMakeFiles/__idf_main.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+make: *** [all] Error 2
