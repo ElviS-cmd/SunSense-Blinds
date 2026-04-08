@@ -1,8 +1,0 @@
-/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c: In function 'ldr_controller_init':
-/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/ldr_controller/ldr_controller.c:44:5: error: implicit declaration of function 'ESP_RETURN_ON_ERROR' [-Wimplicit-function-declaration]
-   44 |     ESP_RETURN_ON_ERROR(
-      |     ^~~~~~~~~~~~~~~~~~~
-make[2]: *** [esp-idf/ldr_controller/CMakeFiles/__idf_ldr_controller.dir/ldr_controller.c.obj] Error 1
-make[1]: *** [esp-idf/ldr_controller/CMakeFiles/__idf_ldr_controller.dir/all] Error 2
-make[1]: *** Waiting for unfinished jobs....
-make: *** [all] Error 2

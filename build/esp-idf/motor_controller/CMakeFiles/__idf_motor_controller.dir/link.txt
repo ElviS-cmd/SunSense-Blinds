@@ -1,2 +1,0 @@
-/Users/elvisserem/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32-elf-ar qc libmotor_controller.a CMakeFiles/__idf_motor_controller.dir/motor_controller.c.obj
-/Users/elvisserem/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32-elf-ranlib libmotor_controller.a

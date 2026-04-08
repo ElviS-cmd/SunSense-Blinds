@@ -1,9 +1,0 @@
-In file included from /Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/oled_display/oled_display.c:1:
-/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/components/oled_display/oled_display.h:8:10: fatal error: system_types.h: No such file or directory
-    8 | #include "system_types.h"
-      |          ^~~~~~~~~~~~~~~~
-compilation terminated.
-make[2]: *** [esp-idf/oled_display/CMakeFiles/__idf_oled_display.dir/oled_display.c.obj] Error 1
-make[1]: *** [esp-idf/oled_display/CMakeFiles/__idf_oled_display.dir/all] Error 2
-make[1]: *** Waiting for unfinished jobs....
-make: *** [all] Error 2
