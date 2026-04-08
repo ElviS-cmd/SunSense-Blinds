@@ -1,0 +1,6 @@
+#ifndef LED_CONTROLLER_SYSTEM_TYPES_WRAPPER_H
+#define LED_CONTROLLER_SYSTEM_TYPES_WRAPPER_H
+
+#include "../../include/system_types.h"
+
+#endif /* LED_CONTROLLER_SYSTEM_TYPES_WRAPPER_H */

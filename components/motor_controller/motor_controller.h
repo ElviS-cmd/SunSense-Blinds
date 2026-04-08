@@ -1,57 +1,81 @@
+/**
+ * @file motor_controller.h
+ * @brief Motor Controller for SunSense V2
+ * @author Elvis
+ * @date 2026
+ * 
+ * Motor control via L298N H-bridge on GPIO12/GPIO13
+ * Drives JGY-370 worm gear motor
+ */
+
 #ifndef MOTOR_CONTROLLER_H
 #define MOTOR_CONTROLLER_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #include "system_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ============ MOTOR CONTROLLER STATE ============ */
+/* ============================================================================
+ * MOTOR CONTROLLER STRUCT
+ * ========================================================================== */
+
 typedef struct {
-    MotorState current_state;      // What the motor is actually doing
-    MotorState desired_state;      // What we want it to do
-    bool state_changed;            // Flag: did state change this update?
-} MotorController;
+    MotorState_t current_state;     // Current motor state
+    uint32_t state_start_time;      // When state was entered
+} MotorController_t;
 
-/* ============ PUBLIC FUNCTIONS ============ */
-
-/**
- * Initialize motor controller (all stopped)
- */
-void motor_init(MotorController *m);
+/* ============================================================================
+ * FUNCTION DECLARATIONS
+ * ========================================================================== */
 
 /**
- * Set desired motor state
- * Returns true if state changed, false if already in that state
+ * @brief Initialize motor controller and GPIO pins
+ * @param motor Pointer to MotorController_t structure
+ * @return true if GPIO initialization succeeded
  */
-bool motor_set_desired(MotorController *m, MotorState desired);
+bool motor_init(MotorController_t *motor);
 
 /**
- * Get current motor state
+ * @brief Set motor to OPENING state (forward)
+ * @param motor Pointer to MotorController_t structure
+ * @param current_time Current time in milliseconds
  */
-MotorState motor_get_current(MotorController *m);
+void motor_set_opening(MotorController_t *motor, uint32_t current_time);
 
 /**
- * Get desired motor state
+ * @brief Set motor to CLOSING state (reverse)
+ * @param motor Pointer to MotorController_t structure
+ * @param current_time Current time in milliseconds
  */
-MotorState motor_get_desired(MotorController *m);
+void motor_set_closing(MotorController_t *motor, uint32_t current_time);
 
 /**
- * Check if state changed in last update
- * (useful for knowing when to apply GPIO changes)
+ * @brief Stop motor
+ * @param motor Pointer to MotorController_t structure
+ * @param current_time Current time in milliseconds
  */
-bool motor_state_changed(MotorController *m);
+void motor_stop(MotorController_t *motor, uint32_t current_time);
 
 /**
- * Clear the state_changed flag
+ * @brief Get current motor state
+ * @param motor Pointer to MotorController_t structure
+ * @return MotorState_t (STOP, OPENING, or CLOSING)
  */
-void motor_clear_changed_flag(MotorController *m);
+MotorState_t motor_get_state(MotorController_t *motor);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * @brief Check if motor is running
+ * @param motor Pointer to MotorController_t structure
+ * @return true if motor is OPENING or CLOSING, false if STOP
+ */
+bool motor_is_running(MotorController_t *motor);
 
-#endif // MOTOR_CONTROLLER_H
+/**
+ * @brief Get time since last state change
+ * @param motor Pointer to MotorController_t structure
+ * @param current_time Current time in milliseconds
+ * @return Elapsed time in milliseconds
+ */
+uint32_t motor_get_elapsed_time(MotorController_t *motor, uint32_t current_time);
+
+#endif /* MOTOR_CONTROLLER_H */

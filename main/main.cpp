@@ -1,387 +1,451 @@
+/**
+ * @file main.cpp
+ * @brief SunSense V2 Main Application
+ */
+
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "esp_system.h"
 #include "esp_log.h"
-#include "esp_check.h"
-#include "driver/gpio.h"
+#include "gpio_config.h"
 
-/* Component Headers */
 extern "C" {
-    #include "ldr_controller.h"
+    #include "button_controller.h"
     #include "mode_controller.h"
     #include "motor_controller.h"
-    #include "button_controller.h"
-    #include "oled_display.h"
-    #include "system_types.h"
+    #include "led_controller.h"
+    #include "ldr_controller.h"
+    #include "encoder_controller.h"
+    #include "servo_controller.h"
+    #include "microphone_controller.h"
 }
 
-/* ==================== Logging ==================== */
+static const char *TAG = "SunSense";
 
-static const char *TAG = "SUNSENSE_MAIN";
+static ButtonController_t button = {};
+static ModeController_t mode = {};
+static MotorController_t motor = {};
+static LEDController_t led = {};
+static LDRController_t ldr = {};
+static EncoderController_t encoder = {};
+static ServoController_t servo = {};
+static MicrophoneController_t microphone = {};
 
-/* ==================== Task Handles ==================== */
+static TaskHandle_t task_button = NULL;
+static TaskHandle_t task_mode = NULL;
+static TaskHandle_t task_motor = NULL;
+static TaskHandle_t task_led = NULL;
+static TaskHandle_t task_ldr = NULL;
+static TaskHandle_t task_encoder = NULL;
+static TaskHandle_t task_microphone = NULL;
+static SemaphoreHandle_t state_mutex = NULL;
 
-static TaskHandle_t g_button_task_handle = NULL;
-static TaskHandle_t g_mode_task_handle = NULL;
-static TaskHandle_t g_motor_task_handle = NULL;
-static TaskHandle_t g_display_task_handle = NULL;
+typedef struct {
+    uint32_t uptime_ms;
+    OperatingMode_t current_mode;
+    MotorState_t motor_state;
+    LightLevel_t light_level;
+    bool system_healthy;
+} SystemState_t;
 
-/* ==================== Global State ==================== */
+static SystemState_t system_state = {};
+static SystemHealth_t system_health = {};
+static SystemConfig_t system_config = {};
+static bool auto_command_pending = false;
+static bool manual_next_open = true;
 
-static ModeController g_mode_ctrl = {MODE_MENU, 0};
-static MotorController g_motor_ctrl = {MOTOR_STOPPED, MOTOR_STOPPED, false};
-static ButtonController g_button_ctrl = {{0, 0, false, BUTTON_ACTION_NONE}, 
-                                          {0, 0, false, BUTTON_ACTION_NONE}, 
-                                          {0, 0, false, BUTTON_ACTION_NONE}};
-
-/* ==================== GPIO Configuration ==================== */
-
-/**
- * @brief Configure GPIO pins for buttons and motor control
- */
-static esp_err_t gpio_init(void)
-{
-    ESP_LOGI(TAG, "Initializing GPIO pins");
-
-    /* Configure button input pins */
-    gpio_config_t btn_config = {
-        .pin_bit_mask = (1ULL << GPIO_BTN_UP) | (1ULL << GPIO_BTN_DOWN) | (1ULL << GPIO_BTN_ENTER),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-
-    ESP_RETURN_ON_ERROR(
-        gpio_config(&btn_config),
-        TAG,
-        "Failed to configure button GPIO pins"
-    );
-
-    /* TODO: Configure motor control pins (L298N inputs) */
-    /* Example:
-     * #define GPIO_MOTOR_IN1 GPIO_NUM_25
-     * #define GPIO_MOTOR_IN2 GPIO_NUM_26
-     * gpio_config_t motor_config = {
-     *     .pin_bit_mask = (1ULL << GPIO_MOTOR_IN1) | (1ULL << GPIO_MOTOR_IN2),
-     *     .mode = GPIO_MODE_OUTPUT,
-     *     .pull_up_en = GPIO_PULLUP_DISABLE,
-     *     .pull_down_en = GPIO_PULLDOWN_DISABLE,
-     *     .intr_type = GPIO_INTR_DISABLE,
-     * };
-     * gpio_config(&motor_config);
-     */
-
-    ESP_LOGI(TAG, "GPIO initialization complete");
-    return ESP_OK;
+static bool lock_state(void) {
+    return (xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE);
 }
 
-/* ==================== Button Task (50ms polling) ==================== */
+static void unlock_state(void) {
+    xSemaphoreGive(state_mutex);
+}
 
-/**
- * @brief Task for polling button states and updating button controller
- * Runs every 50ms to detect button presses with debouncing
- */
-static void button_task(void *pvParameters)
-{
+static bool create_task_checked(TaskFunction_t task_fn,
+                                const char *name,
+                                uint32_t stack_size,
+                                UBaseType_t priority,
+                                TaskHandle_t *handle,
+                                BaseType_t core_id) {
+    BaseType_t result = xTaskCreatePinnedToCore(
+        task_fn,
+        name,
+        stack_size,
+        NULL,
+        priority,
+        handle,
+        core_id);
+
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create task: %s", name);
+        return false;
+    }
+
+    return true;
+}
+
+static void handle_manual_button_locked(uint32_t current_time) {
+    MotorState_t current_motor_state = motor_get_state(&motor);
+
+    if (current_motor_state == MOTOR_OPENING || current_motor_state == MOTOR_CLOSING) {
+        motor_stop(&motor, current_time);
+        manual_next_open = (current_motor_state == MOTOR_CLOSING);
+    } else if (manual_next_open) {
+        motor_set_opening(&motor, current_time);
+        manual_next_open = false;
+    } else {
+        motor_set_closing(&motor, current_time);
+        manual_next_open = true;
+    }
+
+    system_state.motor_state = motor_get_state(&motor);
+}
+
+static void stop_motor_locked(uint32_t current_time) {
+    if (motor_is_running(&motor)) {
+        motor_stop(&motor, current_time);
+        system_state.motor_state = motor_get_state(&motor);
+    }
+}
+
+static void task_button_handler(void *pvParameters) {
     (void)pvParameters;
     ESP_LOGI(TAG, "Button task started");
 
-    button_init(&g_button_ctrl);
-    uint32_t last_tick_ms = 0;
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_BUTTON);
 
     while (1) {
-        uint32_t current_tick_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        button_update(&button, current_time);
 
-        /* Read GPIO button states (active low with pull-ups) */
-        bool btn_up_pressed = !gpio_get_level(GPIO_BTN_UP);
-        bool btn_down_pressed = !gpio_get_level(GPIO_BTN_DOWN);
-        bool btn_enter_pressed = !gpio_get_level(GPIO_BTN_ENTER);
+        ButtonAction_t action = button_get_action(&button);
+        if (action != BUTTON_ACTION_NONE && lock_state()) {
+            OperatingMode_t current_mode = mode_get_current(&mode);
 
-        /* Update button state machine */
-        button_update_up(&g_button_ctrl, btn_up_pressed, current_tick_ms);
-        button_update_down(&g_button_ctrl, btn_down_pressed, current_tick_ms);
-        button_update_enter(&g_button_ctrl, btn_enter_pressed, current_tick_ms);
+            if (action == BUTTON_ACTION_LONG) {
+                mode_handle_button(&mode, action, current_time);
+                stop_motor_locked(current_time);
+                auto_command_pending = system_health.ldr_ok;
+                manual_next_open = true;
+            } else if (current_mode == MODE_AUTO) {
+                mode_handle_button(&mode, action, current_time);
+                stop_motor_locked(current_time);
+                manual_next_open = true;
+            } else {
+                mode_note_activity(&mode, current_time);
+                handle_manual_button_locked(current_time);
+            }
 
-        /* Log detected button actions */
-        ButtonAction up_action = button_get_up_action(&g_button_ctrl);
-        ButtonAction down_action = button_get_down_action(&g_button_ctrl);
-        ButtonAction enter_action = button_get_enter_action(&g_button_ctrl);
-
-        if (up_action != BUTTON_ACTION_NONE) {
-            ESP_LOGD(TAG, "Button UP pressed");
+            system_state.current_mode = mode_get_current(&mode);
+            button_clear_action(&button);
+            unlock_state();
         }
-        if (down_action != BUTTON_ACTION_NONE) {
-            ESP_LOGD(TAG, "Button DOWN pressed");
-        }
-        if (enter_action != BUTTON_ACTION_NONE) {
-            ESP_LOGD(TAG, "Button ENTER pressed");
-        }
 
-        last_tick_ms = current_tick_ms;
-        vTaskDelay(pdMS_TO_TICKS(50));  /* Poll every 50ms */
+        vTaskDelayUntil(&last_wake_time, period);
     }
-
-    vTaskDelete(NULL);
 }
 
-/* ==================== Mode Task (100ms update) ==================== */
-
-/**
- * @brief Task for mode state machine and menu navigation
- * Processes button actions and transitions between modes
- */
-static void mode_task(void *pvParameters)
-{
+static void task_mode_handler(void *pvParameters) {
     (void)pvParameters;
     ESP_LOGI(TAG, "Mode task started");
 
-    mode_init(&g_mode_ctrl);
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MODE);
 
     while (1) {
-        /* Read button actions from button controller */
-        ButtonAction up_action = button_get_up_action(&g_button_ctrl);
-        ButtonAction down_action = button_get_down_action(&g_button_ctrl);
-        ButtonAction enter_action = button_get_enter_action(&g_button_ctrl);
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool changed = false;
+        OperatingMode_t current_mode = MODE_AUTO;
 
-        /* Process button actions */
-        if (up_action == BUTTON_ACTION_UP) {
-            mode_handle_up(&g_mode_ctrl);
-            ESP_LOGD(TAG, "Mode: UP pressed, menu index=%u", mode_get_selected_index(&g_mode_ctrl));
+        if (lock_state()) {
+            mode_update_idle(&mode, current_time);
+            changed = mode_changed(&mode);
+            current_mode = mode_get_current(&mode);
+            system_state.current_mode = current_mode;
+
+            if (changed && current_mode == MODE_AUTO) {
+                stop_motor_locked(current_time);
+                auto_command_pending = system_health.ldr_ok;
+                manual_next_open = true;
+            }
+
+            unlock_state();
         }
 
-        if (down_action == BUTTON_ACTION_DOWN) {
-            mode_handle_down(&g_mode_ctrl);
-            ESP_LOGD(TAG, "Mode: DOWN pressed, menu index=%u", mode_get_selected_index(&g_mode_ctrl));
+        if (changed) {
+            ESP_LOGI(TAG, "Mode changed to: %s", mode_to_string(current_mode));
         }
 
-        if (enter_action == BUTTON_ACTION_ENTER) {
-            mode_handle_enter(&g_mode_ctrl);
-            ESP_LOGI(TAG, "Mode: ENTER pressed, current_mode=%u", mode_get(&g_mode_ctrl));
-        }
-
-        /* Clear button actions after processing */
-        button_clear_actions(&g_button_ctrl);
-
-        vTaskDelay(pdMS_TO_TICKS(100));  /* Update mode every 100ms */
+        vTaskDelayUntil(&last_wake_time, period);
     }
-
-    vTaskDelete(NULL);
 }
 
-/* ==================== Motor Task (100ms update) ==================== */
-
-/**
- * @brief Task for motor control logic
- * In AUTO mode: responds to LDR sensor state
- * In MANUAL mode: responds to button commands
- */
-static void motor_task(void *pvParameters)
-{
+static void task_motor_handler(void *pvParameters) {
     (void)pvParameters;
     ESP_LOGI(TAG, "Motor task started");
 
-    motor_init(&g_motor_ctrl);
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MOTOR);
 
     while (1) {
-        OperatingMode current_mode = mode_get(&g_mode_ctrl);
-        MotorState desired_state = MOTOR_STOPPED;
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-        if (current_mode == MODE_AUTO) {
-            /* AUTO mode: LDR sensor drives motor */
-            bool is_bright = ldr_is_bright();
+        if (lock_state()) {
+            OperatingMode_t current_mode = mode_get_current(&mode);
+            MotorState_t motor_state = motor_get_state(&motor);
 
-            if (is_bright) {
-                /* Light is bright: open the blinds */
-                desired_state = MOTOR_OPENING;
-            } else {
-                /* Light is dark: close the blinds */
-                desired_state = MOTOR_CLOSING;
+            if (current_mode == MODE_AUTO) {
+                if (motor_state != MOTOR_STOP) {
+                    bool timeout_reached = (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
+                    bool endpoint_reached = false;
+
+                    if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
+                        float position_percent = encoder_get_percent(&encoder);
+                        endpoint_reached =
+                            ((motor_state == MOTOR_OPENING) && (position_percent >= 99.0f)) ||
+                            ((motor_state == MOTOR_CLOSING) && (position_percent <= 1.0f));
+                    }
+
+                    if (timeout_reached || endpoint_reached) {
+                        stop_motor_locked(current_time);
+                    }
+                } else if (auto_command_pending && system_health.ldr_ok) {
+                    if (ldr_is_bright(&ldr)) {
+                        motor_set_opening(&motor, current_time);
+                    } else if (ldr_is_dark(&ldr)) {
+                        motor_set_closing(&motor, current_time);
+                    }
+                    auto_command_pending = false;
+                }
             }
 
-            ESP_LOGD(TAG, "AUTO mode: LDR bright=%d, motor=%u", is_bright, desired_state);
-
-        } else if (current_mode == MODE_MANUAL) {
-            /* MANUAL mode: buttons drive motor */
-            ButtonAction up_action = button_get_up_action(&g_button_ctrl);
-            ButtonAction down_action = button_get_down_action(&g_button_ctrl);
-
-            if (up_action == BUTTON_ACTION_UP) {
-                desired_state = MOTOR_OPENING;
-                ESP_LOGD(TAG, "MANUAL mode: UP pressed -> OPENING");
-            } else if (down_action == BUTTON_ACTION_DOWN) {
-                desired_state = MOTOR_CLOSING;
-                ESP_LOGD(TAG, "MANUAL mode: DOWN pressed -> CLOSING");
-            }
-
-        } else {
-            /* MENU mode: stop motor */
-            desired_state = MOTOR_STOPPED;
+            system_state.motor_state = motor_get_state(&motor);
+            unlock_state();
         }
 
-        /* Update motor controller */
-        bool state_changed = motor_set_desired(&g_motor_ctrl, desired_state);
-
-        if (state_changed) {
-            MotorState current = motor_get_current(&g_motor_ctrl);
-            ESP_LOGI(TAG, "Motor state changed to: %u", current);
-
-            /* TODO: Implement GPIO control for L298N motor driver
-             * Example:
-             * switch (current) {
-             *     case MOTOR_OPENING:
-             *         gpio_set_level(GPIO_MOTOR_IN1, 1);
-             *         gpio_set_level(GPIO_MOTOR_IN2, 0);
-             *         break;
-             *     case MOTOR_CLOSING:
-             *         gpio_set_level(GPIO_MOTOR_IN1, 0);
-             *         gpio_set_level(GPIO_MOTOR_IN2, 1);
-             *         break;
-             *     case MOTOR_STOPPED:
-             *         gpio_set_level(GPIO_MOTOR_IN1, 0);
-             *         gpio_set_level(GPIO_MOTOR_IN2, 0);
-             *         break;
-             * }
-             */
-
-            motor_clear_changed_flag(&g_motor_ctrl);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(100));  /* Update motor every 100ms */
+        vTaskDelayUntil(&last_wake_time, period);
     }
-
-    vTaskDelete(NULL);
 }
 
-/* ==================== Display Task (500ms update) ==================== */
-
-/**
- * @brief Task for OLED display updates
- * Shows menu in MENU mode, operating info in AUTO/MANUAL modes
- */
-static void display_task(void *pvParameters)
-{
+static void task_led_handler(void *pvParameters) {
     (void)pvParameters;
-    ESP_LOGI(TAG, "Display task started");
+    ESP_LOGI(TAG, "LED task started");
 
-    oled_init();
-    oled_clear();
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_LED);
 
     while (1) {
-        OperatingMode current_mode = mode_get(&g_mode_ctrl);
-        MotorState motor_state = motor_get_current(&g_motor_ctrl);
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool healthy = false;
+        OperatingMode_t current_mode = MODE_AUTO;
 
-        if (current_mode == MODE_MENU) {
-            /* Display menu screen */
-            uint8_t selected_index = mode_get_selected_index(&g_mode_ctrl);
-            oled_display_menu(selected_index);
-            ESP_LOGD(TAG, "Display: MENU (selected=%u)", selected_index);
-
-        } else {
-            /* Display operating screen (AUTO or MANUAL) */
-            uint8_t light_level = (ldr_get_light_level_1() + ldr_get_light_level_2()) / 2;
-            oled_display_operating(current_mode, motor_state, light_level);
-            ESP_LOGD(TAG, "Display: %s (motor=%u, light=%u%%)",
-                     (current_mode == MODE_AUTO) ? "AUTO" : "MANUAL",
-                     motor_state, light_level);
+        if (lock_state()) {
+            healthy = system_state.system_healthy;
+            current_mode = system_state.current_mode;
+            unlock_state();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(500));  /* Update display every 500ms */
-    }
+        if (system_health.led_ok) {
+            led_update(&led, current_time);
+            led_set_green(&led, healthy ? LED_BLINK_SLOW : LED_BLINK_FAST);
+            led_set_blue(&led, (current_mode == MODE_AUTO) ? LED_ON : LED_BLINK_SLOW);
+        }
 
-    vTaskDelete(NULL);
+        vTaskDelayUntil(&last_wake_time, period);
+    }
 }
 
-/* ==================== System Initialization ==================== */
+static void task_ldr_handler(void *pvParameters) {
+    (void)pvParameters;
+    ESP_LOGI(TAG, "LDR task started");
 
-/**
- * @brief Initialize all system components in correct order
- */
-static esp_err_t system_init(void)
-{
-    ESP_LOGI(TAG, "=== SunSense System Initialization ===");
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_LDR);
 
-    /* Step 1: GPIO configuration */
-    ESP_RETURN_ON_ERROR(gpio_init(), TAG, "GPIO init failed");
-
-    /* Step 2: LDR sensor initialization (creates its own FreeRTOS task) */
-    ESP_RETURN_ON_ERROR(ldr_controller_init(), TAG, "LDR controller init failed");
-
-    /* Step 3: OLED display initialization */
-    oled_init();
-
-    /* Step 4: Initialize state machines */
-    mode_init(&g_mode_ctrl);
-    motor_init(&g_motor_ctrl);
-    button_init(&g_button_ctrl);
-
-    ESP_LOGI(TAG, "System initialization complete");
-    return ESP_OK;
-}
-
-/**
- * @brief Create application tasks
- */
-static esp_err_t tasks_create(void)
-{
-    ESP_LOGI(TAG, "Creating FreeRTOS tasks");
-
-    /* Button polling task (50ms) - Priority 6 */
-    if (xTaskCreate(button_task, "button_task", 2048, NULL, 6, &g_button_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create button task");
-        return ESP_FAIL;
-    }
-
-    /* Mode state machine task (100ms) - Priority 5 */
-    if (xTaskCreate(mode_task, "mode_task", 2048, NULL, 5, &g_mode_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create mode task");
-        return ESP_FAIL;
-    }
-
-    /* Motor control task (100ms) - Priority 5 */
-    if (xTaskCreate(motor_task, "motor_task", 2048, NULL, 5, &g_motor_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create motor task");
-        return ESP_FAIL;
-    }
-
-    /* Display update task (500ms) - Priority 4 */
-    if (xTaskCreate(display_task, "display_task", 3072, NULL, 4, &g_display_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create display task");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "All tasks created successfully");
-    return ESP_OK;
-}
-
-/* ==================== Main Entry Point ==================== */
-
-/**
- * @brief Main application entry point
- */
-extern "C" void app_main(void)
-{
-    ESP_LOGI(TAG, "\n\n================= SunSense Blinds System =================");
-    ESP_LOGI(TAG, "Starting up...\n");
-
-    /* Initialize system components */
-    if (system_init() != ESP_OK) {
-        ESP_LOGE(TAG, "System initialization failed!");
-        return;
-    }
-
-    /* Create application tasks */
-    if (tasks_create() != ESP_OK) {
-        ESP_LOGE(TAG, "Task creation failed!");
-        return;
-    }
-
-    ESP_LOGI(TAG, "================= System Ready =================\n");
-
-    /* Main thread sleeps; all work done in FreeRTOS tasks */
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10000));  /* Check every 10s */
-        ESP_LOGD(TAG, "Heartbeat: System running");
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool level_changed = false;
+        LightLevel_t light_level = LIGHT_DARK;
+        uint16_t raw_level = 0;
+
+        if (system_health.ldr_ok && lock_state()) {
+            ldr_update(&ldr, current_time);
+            level_changed = ldr_level_changed(&ldr);
+            light_level = ldr_get_level(&ldr);
+            raw_level = ldr_get_raw(&ldr);
+            system_state.light_level = light_level;
+
+            if (level_changed) {
+                auto_command_pending = (mode_get_current(&mode) == MODE_AUTO);
+            }
+
+            unlock_state();
+        }
+
+        if (level_changed) {
+            ESP_LOGI(TAG, "Light level: %s (raw: %u)", light_level_to_string(light_level), raw_level);
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_encoder_handler(void *pvParameters) {
+    (void)pvParameters;
+    ESP_LOGI(TAG, "Encoder task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_ENCODER);
+    uint32_t last_log = 0;
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool updated = false;
+        float angle = 0.0f;
+
+        if (system_health.encoder_ok && lock_state()) {
+            updated = encoder_update(&encoder, current_time);
+            angle = encoder_get_degrees(&encoder);
+            unlock_state();
+        }
+
+        if (updated && (current_time - last_log > 1000U)) {
+            ESP_LOGI(TAG, "Encoder: %.1f°", angle);
+            last_log = current_time;
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_microphone_handler(void *pvParameters) {
+    (void)pvParameters;
+    ESP_LOGI(TAG, "Microphone task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MICROPHONE);
+    uint32_t last_log = 0;
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        if (system_health.microphone_ok) {
+            microphone_update(&microphone, current_time);
+
+            if (microphone_is_buffer_ready(&microphone)) {
+                uint16_t level = microphone_get_level(&microphone);
+
+                if (current_time - last_log > 2000U) {
+                    ESP_LOGI(TAG, "Audio level: %u", level);
+                    last_log = current_time;
+                }
+
+                microphone_clear_buffer(&microphone);
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static bool initialize_all_controllers(void) {
+    ESP_LOGI(TAG, "Initializing controllers...");
+
+    system_config = get_default_config();
+
+    system_health.button_ok = button_init(&button);
+    mode_init(&mode);
+    system_health.motor_ok = motor_init(&motor);
+    system_health.led_ok = led_init(&led);
+    system_health.ldr_ok = ldr_init(&ldr);
+    system_health.encoder_ok = encoder_init(&encoder);
+    system_health.servo_ok = servo_init(&servo);
+    system_health.microphone_ok = microphone_init(&microphone);
+
+    system_state.current_mode = mode_get_current(&mode);
+    system_state.motor_state = motor_get_state(&motor);
+    system_state.light_level = ldr_get_level(&ldr);
+    system_state.system_healthy =
+        system_health.button_ok &&
+        system_health.motor_ok &&
+        system_health.led_ok &&
+        system_health.ldr_ok &&
+        system_health.encoder_ok &&
+        system_health.servo_ok &&
+        system_health.microphone_ok;
+
+    auto_command_pending = system_health.ldr_ok;
+    manual_next_open = true;
+
+    ESP_LOGI(TAG, "Button: %s", system_health.button_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "Motor: %s", system_health.motor_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "LED: %s", system_health.led_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "LDR: %s", system_health.ldr_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "Encoder: %s", system_health.encoder_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "Servo: %s", system_health.servo_ok ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "Microphone: %s", system_health.microphone_ok ? "OK" : "FAILED");
+
+    return system_state.system_healthy;
+}
+
+static bool create_all_tasks(void) {
+    ESP_LOGI(TAG, "Creating FreeRTOS tasks...");
+
+    return
+        create_task_checked(task_button_handler, "button_task", TASK_STACK_BUTTON, TASK_PRIORITY_BUTTON, &task_button, 0) &&
+        create_task_checked(task_mode_handler, "mode_task", TASK_STACK_MODE, TASK_PRIORITY_MODE, &task_mode, 0) &&
+        create_task_checked(task_motor_handler, "motor_task", TASK_STACK_MOTOR, TASK_PRIORITY_MOTOR, &task_motor, 1) &&
+        create_task_checked(task_led_handler, "led_task", TASK_STACK_LED, TASK_PRIORITY_LED, &task_led, 0) &&
+        create_task_checked(task_ldr_handler, "ldr_task", TASK_STACK_LDR, TASK_PRIORITY_LDR, &task_ldr, 0) &&
+        create_task_checked(task_encoder_handler, "encoder_task", TASK_STACK_ENCODER, TASK_PRIORITY_ENCODER, &task_encoder, 0) &&
+        create_task_checked(task_microphone_handler, "microphone_task", TASK_STACK_MICROPHONE, TASK_PRIORITY_MICROPHONE, &task_microphone, 1);
+}
+
+extern "C" void app_main(void) {
+    ESP_LOGI(TAG, "Starting SunSense V2");
+
+    state_mutex = xSemaphoreCreateMutex();
+    if (state_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create state mutex");
+        return;
+    }
+
+    if (!initialize_all_controllers()) {
+        ESP_LOGE(TAG, "Controller initialization failed, refusing to start tasks");
+        return;
+    }
+
+    if (!create_all_tasks()) {
+        ESP_LOGE(TAG, "Task creation failed, refusing to continue");
+        return;
+    }
+
+    uint32_t last_log_time = 0;
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        SystemState_t snapshot = {};
+
+        if (lock_state()) {
+            servo_update(&servo, current_time);
+            system_state.uptime_ms = current_time;
+            snapshot = system_state;
+            unlock_state();
+        }
+
+        if (current_time - last_log_time > 10000U) {
+            ESP_LOGI(TAG, "=== System Status ===");
+            ESP_LOGI(TAG, "Uptime: %lu ms", static_cast<unsigned long>(snapshot.uptime_ms));
+            ESP_LOGI(TAG, "Mode: %s", mode_to_string(snapshot.current_mode));
+            ESP_LOGI(TAG, "Motor: %s", motor_state_to_string(snapshot.motor_state));
+            ESP_LOGI(TAG, "Light: %s", light_level_to_string(snapshot.light_level));
+            ESP_LOGI(TAG, "Healthy: %s", snapshot.system_healthy ? "YES" : "NO");
+            last_log_time = current_time;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

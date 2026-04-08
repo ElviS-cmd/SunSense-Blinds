@@ -1,0 +1,6 @@
+#ifndef SERVO_CONTROLLER_SYSTEM_TYPES_WRAPPER_H
+#define SERVO_CONTROLLER_SYSTEM_TYPES_WRAPPER_H
+
+#include "../../include/system_types.h"
+
+#endif /* SERVO_CONTROLLER_SYSTEM_TYPES_WRAPPER_H */

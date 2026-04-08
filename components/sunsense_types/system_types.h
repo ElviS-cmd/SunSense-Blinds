@@ -1,0 +1,6 @@
+#ifndef SUNSENSE_TYPES_SYSTEM_TYPES_WRAPPER_H
+#define SUNSENSE_TYPES_SYSTEM_TYPES_WRAPPER_H
+
+#include "../../include/system_types.h"
+
+#endif /* SUNSENSE_TYPES_SYSTEM_TYPES_WRAPPER_H */

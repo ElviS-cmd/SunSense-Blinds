@@ -1,129 +1,91 @@
+/**
+ * @file ldr_controller.h
+ * @brief LDR Controller for SunSense V2
+ * @author Elvis
+ * @date 2026
+ * 
+ * Light-Dependent Resistor sensor on GPIO1 (ADC)
+ * Analog light level detection with hysteresis filtering
+ */
+
 #ifndef LDR_CONTROLLER_H
 #define LDR_CONTROLLER_H
 
+#include "system_types.h"
 #include <stdint.h>
 #include <stdbool.h>
-#include "esp_err.h"
-#include "esp_adc/adc_oneshot.h"
 
-/**
- * @brief LDR Controller - Light Dependent Resistor sensor interface
- * 
- * Features:
- * - Dual ADC input (GPIO34, GPIO35)
- * - Moving average filtering (10 readings)
- * - Normalized output (0-100%)
- * - Hysteresis logic for stable thresholds
- * - FreeRTOS task-based sampling (1000ms interval)
- */
+/* ============================================================================
+ * LDR CONTROLLER STRUCT
+ * ========================================================================== */
 
-/* ==================== Configuration ==================== */
-
-#define LDR_ADC_CHANNEL_1     ADC_CHANNEL_6    /* GPIO34 */
-#define LDR_ADC_CHANNEL_2     ADC_CHANNEL_7    /* GPIO35 */
-#define LDR_FILTER_SIZE       10                /* Moving average window */
-#define LDR_UPDATE_INTERVAL_MS 1000             /* Task update rate */
-#define LDR_HYSTERESIS_THRESHOLD 5              /* % change to trigger event */
-
-/* ==================== Data Types ==================== */
-
-/**
- * @brief Hysteresis state tracking
- */
 typedef struct {
-    uint8_t last_normalized;      /* Last reported normalized value */
-    bool is_bright;               /* Current state (bright/dark) */
-} ldr_hysteresis_t;
+    uint16_t raw_adc_value;         // Raw ADC reading (0-4095)
+    uint16_t filtered_value;        // Filtered with moving average
+    LightLevel_t current_level;     // Current light level state
+    LightLevel_t previous_level;    // Previous light level state
+    uint32_t last_transition_time;  // When light level last changed
+    uint16_t sample_count;          // For moving average filter
+} LDRController_t;
 
-/**
- * @brief LDR controller context
- */
-typedef struct {
-    uint16_t raw_adc_1;           /* Raw ADC reading from GPIO34 */
-    uint16_t raw_adc_2;           /* Raw ADC reading from GPIO35 */
-    uint8_t normalized_1;         /* Normalized (0-100%) GPIO34 */
-    uint8_t normalized_2;         /* Normalized (0-100%) GPIO35 */
-    uint16_t filter_buffer_1[LDR_FILTER_SIZE];  /* Moving average buffer */
-    uint16_t filter_buffer_2[LDR_FILTER_SIZE];  /* Moving average buffer */
-    uint8_t filter_index;         /* Current position in filter buffer */
-    ldr_hysteresis_t hysteresis;  /* Hysteresis state */
-    bool initialized;             /* Initialization flag */
-} ldr_controller_t;
-
-/* ==================== Public Functions ==================== */
+/* ============================================================================
+ * FUNCTION DECLARATIONS
+ * ========================================================================== */
 
 /**
  * @brief Initialize LDR controller and ADC
- * 
- * - Configures ADC1 for GPIO34 and GPIO35
- * - Initializes filter buffers
- * - Creates FreeRTOS task for periodic sampling
- * 
- * @return ESP_OK on success, error code otherwise
+ * @param ldr Pointer to LDRController_t structure
+ * @return true if ADC initialization succeeded
  */
-esp_err_t ldr_controller_init(void);
+bool ldr_init(LDRController_t *ldr);
 
 /**
- * @brief Get normalized light level from GPIO34
- * 
- * @return Light level (0-100%), where 0=dark, 100=bright
+ * @brief Read and update LDR sensor value
+ * @param ldr Pointer to LDRController_t structure
+ * @param current_time Current time in milliseconds
  */
-uint8_t ldr_get_light_level_1(void);
+void ldr_update(LDRController_t *ldr, uint32_t current_time);
 
 /**
- * @brief Get normalized light level from GPIO35
- * 
- * @return Light level (0-100%), where 0=dark, 100=bright
+ * @brief Get current light level state
+ * @param ldr Pointer to LDRController_t structure
+ * @return LightLevel_t (DARK or BRIGHT)
  */
-uint8_t ldr_get_light_level_2(void);
+LightLevel_t ldr_get_level(LDRController_t *ldr);
 
 /**
- * @brief Get raw ADC reading from GPIO34
- * 
+ * @brief Get raw ADC value
+ * @param ldr Pointer to LDRController_t structure
  * @return Raw ADC value (0-4095)
  */
-uint16_t ldr_get_raw_adc_1(void);
+uint16_t ldr_get_raw(LDRController_t *ldr);
 
 /**
- * @brief Get raw ADC reading from GPIO35
- * 
- * @return Raw ADC value (0-4095)
+ * @brief Get filtered ADC value
+ * @param ldr Pointer to LDRController_t structure
+ * @return Filtered ADC value (0-4095)
  */
-uint16_t ldr_get_raw_adc_2(void);
+uint16_t ldr_get_filtered(LDRController_t *ldr);
 
 /**
- * @brief Check if light level crossed hysteresis threshold (bright)
- * 
- * Returns true once when transitioning to bright state,
- * requires drop below (threshold - hysteresis) to reset.
- * 
- * @return true if bright threshold crossed, false otherwise
+ * @brief Check if light level changed this update
+ * @param ldr Pointer to LDRController_t structure
+ * @return true if light level transitioned, false otherwise
  */
-bool ldr_is_bright(void);
+bool ldr_level_changed(LDRController_t *ldr);
 
 /**
- * @brief Check if light level crossed hysteresis threshold (dark)
- * 
- * Returns true once when transitioning to dark state,
- * requires rise above (threshold + hysteresis) to reset.
- * 
- * @return true if dark threshold crossed, false otherwise
+ * @brief Check if light is bright
+ * @param ldr Pointer to LDRController_t structure
+ * @return true if bright, false if dark
  */
-bool ldr_is_dark(void);
+bool ldr_is_bright(LDRController_t *ldr);
 
 /**
- * @brief Get detailed LDR controller state
- * 
- * @param controller Pointer to controller context
- * @return ESP_OK on success
+ * @brief Check if light is dark
+ * @param ldr Pointer to LDRController_t structure
+ * @return true if dark, false if bright
  */
-esp_err_t ldr_get_state(ldr_controller_t *controller);
-
-/**
- * @brief Deinitialize LDR controller and stop FreeRTOS task
- * 
- * @return ESP_OK on success
- */
-esp_err_t ldr_controller_deinit(void);
+bool ldr_is_dark(LDRController_t *ldr);
 
 #endif /* LDR_CONTROLLER_H */

@@ -1,52 +1,67 @@
+/**
+ * @file button_controller.h
+ * @brief Button Controller for SunSense V2
+ * @author Elvis
+ * @date 2026
+ * 
+ * Single button input with debounce and long press detection
+ * Button on GPIO3 with internal pull-up (active LOW)
+ */
+
 #ifndef BUTTON_CONTROLLER_H
 #define BUTTON_CONTROLLER_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #include "system_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ============ GPIO PIN DEFINITIONS ============ */
-#define GPIO_BTN_UP    (gpio_num_t)13
-#define GPIO_BTN_DOWN  (gpio_num_t)12
-#define GPIO_BTN_ENTER (gpio_num_t)32
+/* ============================================================================
+ * BUTTON CONTROLLER STRUCT
+ * ========================================================================== */
 
-/* ============ SINGLE BUTTON STATE ============ */
 typedef struct {
-    uint32_t last_press_time;
-    uint32_t press_start_time;
-    bool pin_currently_low;
-    ButtonAction last_action;
-} ButtonState;
+    uint32_t press_start_time;      // When button was pressed
+    uint32_t last_action_time;      // Last action timestamp
+    bool is_pressed;                // Current button state
+    ButtonAction_t current_action;  // Last detected action
+} ButtonController_t;
 
-/* ============ THREE-BUTTON CONTROLLER ============ */
-typedef struct {
-    ButtonState btn_up;
-    ButtonState btn_down;
-    ButtonState btn_enter;
-} ButtonController;
+/* ============================================================================
+ * FUNCTION DECLARATIONS
+ * ========================================================================== */
 
-/* ============ DEBOUNCE & TIMING ============ */
-#define BUTTON_DEBOUNCE_MS 50
-#define BUTTON_HOLD_TIME_MS 2000
+/**
+ * @brief Initialize button controller
+ * @param btn Pointer to ButtonController_t structure
+ * @return true if GPIO initialization succeeded
+ */
+bool button_init(ButtonController_t *btn);
 
-/* ============ PUBLIC FUNCTIONS ============ */
-void button_init(ButtonController *btn);
-void button_update_up(ButtonController *btn, bool pin_low, uint32_t now_ms);
-void button_update_down(ButtonController *btn, bool pin_low, uint32_t now_ms);
-void button_update_enter(ButtonController *btn, bool pin_low, uint32_t now_ms);
+/**
+ * @brief Update button state (call periodically from task)
+ * @param btn Pointer to ButtonController_t structure
+ * @param current_time Current time in milliseconds
+ */
+void button_update(ButtonController_t *btn, uint32_t current_time);
 
-ButtonAction button_get_up_action(ButtonController *btn);
-ButtonAction button_get_down_action(ButtonController *btn);
-ButtonAction button_get_enter_action(ButtonController *btn);
+/**
+ * @brief Get last detected action
+ * @param btn Pointer to ButtonController_t structure
+ * @return ButtonAction_t (NONE, SHORT, or LONG)
+ */
+ButtonAction_t button_get_action(ButtonController_t *btn);
 
-void button_clear_actions(ButtonController *btn);
+/**
+ * @brief Clear the current action
+ * @param btn Pointer to ButtonController_t structure
+ */
+void button_clear_action(ButtonController_t *btn);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * @brief Get current button state
+ * @param btn Pointer to ButtonController_t structure
+ * @return true if button is pressed, false otherwise
+ */
+bool button_is_pressed(ButtonController_t *btn);
 
-#endif // BUTTON_CONTROLLER_H
+#endif /* BUTTON_CONTROLLER_H */

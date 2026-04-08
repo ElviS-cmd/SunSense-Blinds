@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "motor_controller.c"
+    SRCS "servo_controller.c"
     INCLUDE_DIRS "." "../../include"
     REQUIRES driver sunsense_types
 )

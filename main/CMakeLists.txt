@@ -1,18 +1,19 @@
 idf_component_register(
     SRCS "main.cpp"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "../include"
     REQUIRES 
-        freertos 
-        esp_system 
-        esp_common 
-        driver 
-        ldr_controller 
-        mode_controller 
-        motor_controller 
-        button_controller 
-        oled_display 
-        system_types
+        driver
+        freertos
+        esp_common
+        button_controller
+        mode_controller
+        motor_controller
+        led_controller
+        ldr_controller
+        encoder_controller
+        servo_controller
+        microphone_controller
+        sunsense_types
 )
 
-# Compile flags
-target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -O2)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra)

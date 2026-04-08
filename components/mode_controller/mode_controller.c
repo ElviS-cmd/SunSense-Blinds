@@ -1,71 +1,71 @@
+/**
+ * @file mode_controller.c
+ * @brief Mode Controller implementation
+ */
+
 #include "mode_controller.h"
 
-/* ============ MENU ITEMS ============ */
-#define NUM_MENU_ITEMS 2  // AUTO and MANUAL (SETTINGS is placeholder)
+#include <string.h>
 
-/* ============ INITIALIZE ============ */
-void mode_init(ModeController *m) {
-    m->current_mode = MODE_MENU;
-    m->menu_selected_index = 0;  // Start on AUTO MODE
+#define MODE_IDLE_TIMEOUT_MS 5000
+
+static void mark_mode_changed(ModeController_t *mode, uint32_t current_time) {
+    mode->last_mode_change_time = current_time;
+    mode->changed_since_last_check = true;
 }
 
-/* ============ SET MODE ============ */
-void mode_set(ModeController *m, OperatingMode mode) {
-    m->current_mode = mode;
+void mode_init(ModeController_t *mode) {
+    memset(mode, 0, sizeof(*mode));
+    mode->current_mode = MODE_AUTO;
 }
 
-/* ============ GET MODE ============ */
-OperatingMode mode_get(ModeController *m) {
-    return m->current_mode;
+void mode_handle_button(ModeController_t *mode, ButtonAction_t button_action, uint32_t current_time) {
+    if (button_action == BUTTON_ACTION_SHORT) {
+        mode_cycle_next(mode, current_time);
+        mode->idle_start_time = current_time;
+        mode->idle_timer_active = true;
+    } else if (button_action == BUTTON_ACTION_LONG) {
+        mode_return_to_auto(mode, current_time);
+        mode->idle_timer_active = false;
+    }
 }
 
-/* ============ HANDLE UP BUTTON ============ */
-void mode_handle_up(ModeController *m) {
-    // Only navigate menu if in MENU mode
-    if (m->current_mode != MODE_MENU) {
+void mode_update_idle(ModeController_t *mode, uint32_t current_time) {
+    if (!mode->idle_timer_active) {
         return;
     }
-    
-    // Move pointer up (wrap around to bottom)
-    if (m->menu_selected_index == 0) {
-        m->menu_selected_index = NUM_MENU_ITEMS - 1;
-    } else {
-        m->menu_selected_index--;
+
+    if ((current_time - mode->idle_start_time) >= MODE_IDLE_TIMEOUT_MS) {
+        mode_return_to_auto(mode, current_time);
+        mode->idle_timer_active = false;
     }
 }
 
-/* ============ HANDLE DOWN BUTTON ============ */
-void mode_handle_down(ModeController *m) {
-    // Only navigate menu if in MENU mode
-    if (m->current_mode != MODE_MENU) {
+void mode_note_activity(ModeController_t *mode, uint32_t current_time) {
+    mode->idle_start_time = current_time;
+    mode->idle_timer_active = true;
+}
+
+OperatingMode_t mode_get_current(ModeController_t *mode) {
+    return mode->current_mode;
+}
+
+void mode_cycle_next(ModeController_t *mode, uint32_t current_time) {
+    mode->current_mode = (mode->current_mode == MODE_AUTO) ? MODE_MANUAL : MODE_AUTO;
+    mark_mode_changed(mode, current_time);
+}
+
+void mode_return_to_auto(ModeController_t *mode, uint32_t current_time) {
+    if (mode->current_mode == MODE_AUTO) {
         return;
     }
-    
-    // Move pointer down (wrap around to top)
-    if (m->menu_selected_index >= NUM_MENU_ITEMS - 1) {
-        m->menu_selected_index = 0;
-    } else {
-        m->menu_selected_index++;
-    }
+
+    mode->current_mode = MODE_AUTO;
+    mark_mode_changed(mode, current_time);
 }
 
-/* ============ HANDLE ENTER BUTTON ============ */
-void mode_handle_enter(ModeController *m) {
-    if (m->current_mode == MODE_MENU) {
-        // Select the highlighted menu item
-        if (m->menu_selected_index == 0) {
-            m->current_mode = MODE_AUTO;
-        } else if (m->menu_selected_index == 1) {
-            m->current_mode = MODE_MANUAL;
-        }
-    } else {
-        // In AUTO or MANUAL mode, return to menu
-        m->current_mode = MODE_MENU;
-        m->menu_selected_index = 0;
-    }
-}
-
-/* ============ GET SELECTED INDEX ============ */
-uint8_t mode_get_selected_index(ModeController *m) {
-    return m->menu_selected_index;
+bool mode_changed(ModeController_t *mode) {
+    bool changed = mode->changed_since_last_check;
+    mode->changed_since_last_check = false;
+    return changed;
 }
