@@ -1,16 +1,18 @@
 # Build artifacts
 build/
-.vscode/
 *.o
 *.a
 *.so
 *.elf
 *.bin
+*.map
 
 # ESP-IDF specific
 sdkconfig.old
 sdkconfig.rename
 .gdbinit
+dependencies.lock
+managed_components/
 
 # Python cache
 __pycache__/
@@ -23,11 +25,22 @@ __pycache__/
 .LSOverride
 Thumbs.db
 
-# IDE
+# IDE and editor
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+secrets.*
+credentials.*
 
 # Temporary files
 *.tmp
