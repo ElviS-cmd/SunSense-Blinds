@@ -129,9 +129,9 @@ void servo_update(ServoController_t *servo, uint32_t current_time) {
     }
     
     uint32_t elapsed = current_time - servo->move_start_time;
-    
+
     /* Check if movement is complete */
-    if (elapsed >= servo->move_duration_ms) {
+    if (servo->move_duration_ms == 0 || elapsed >= servo->move_duration_ms) {
         servo->current_angle = servo->target_angle;
         servo->is_moving = false;
         servo->state = SERVO_IDLE;

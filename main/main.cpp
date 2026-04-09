@@ -444,9 +444,10 @@ static void handle_position_command(const char *payload, int len) {
     }
 
     memcpy(buffer, payload, len);
-    int requested_position = atoi(buffer);
-    if (requested_position < 0 || requested_position > 100) {
-        ESP_LOGW(TAG, "Ignoring out-of-range position command");
+    char *endptr = NULL;
+    long requested_position = strtol(buffer, &endptr, 10);
+    if (endptr == buffer || requested_position < 0 || requested_position > 100) {
+        ESP_LOGW(TAG, "Ignoring invalid position command");
         return;
     }
 
