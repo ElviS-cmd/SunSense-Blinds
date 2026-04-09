@@ -137,7 +137,8 @@ The Linux-side Home Assistant and Mosquitto setup used during development lives 
 From the project root:
 
 ```bash
-source /home/elvisserem/SunSense-Blinds/env.sh
+export IDF_PATH=/path/to/esp-idf
+source env.sh
 idf.py build
 idf.py flash
 idf.py monitor
