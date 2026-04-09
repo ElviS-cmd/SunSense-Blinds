@@ -61,6 +61,8 @@ static bool wifi_connected = false;
 static bool mqtt_connected = false;
 static bool network_provisioned = false;
 static bool provisioning_active = false;
+static uint8_t wifi_retry_count = 0;
+static constexpr uint8_t WIFI_MAX_RETRIES = 10;
 
 static constexpr size_t MQTT_URI_MAX_LEN = 128;
 static constexpr size_t DEVICE_ID_MAX_LEN = 48;
@@ -487,6 +489,7 @@ static void handle_system_command(const char *payload, int len) {
         }
     } else if ((len == 11) && (strncmp(payload, "REPROVISION", 11) == 0)) {
         if (clear_network_config_from_nvs() == ESP_OK) {
+            wifi_prov_mgr_reset_provisioning();
             ESP_LOGW(TAG, "Network settings cleared from NVS; restarting for reprovision");
             esp_restart();
         } else {
@@ -623,7 +626,8 @@ static void network_event_handler(void *arg,
                 ESP_LOGI(TAG, "Provisioning successful");
                 break;
             case WIFI_PROV_CRED_FAIL:
-                ESP_LOGE(TAG, "Provisioning failed");
+                ESP_LOGE(TAG, "Provisioning failed: bad Wi-Fi credentials, resetting for retry");
+                wifi_prov_mgr_reset_sm_state_on_failure();
                 break;
             case WIFI_PROV_END:
                 provisioning_active = false;
@@ -647,12 +651,21 @@ static void network_event_handler(void *arg,
             ESP_LOGE(TAG, "Provisioning failed: incorrect setup code");
         }
     } else if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_START)) {
+        wifi_retry_count = 0;
         esp_wifi_connect();
     } else if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_DISCONNECTED)) {
         wifi_connected = false;
         mqtt_connected = false;
-        esp_wifi_connect();
+        if (wifi_retry_count < WIFI_MAX_RETRIES) {
+            wifi_retry_count++;
+            vTaskDelay(pdMS_TO_TICKS(1000 * wifi_retry_count));
+            ESP_LOGW(TAG, "Wi-Fi disconnected, retry %u/%u", wifi_retry_count, WIFI_MAX_RETRIES);
+            esp_wifi_connect();
+        } else {
+            ESP_LOGE(TAG, "Wi-Fi failed after %u retries, giving up", WIFI_MAX_RETRIES);
+        }
     } else if ((event_base == IP_EVENT) && (event_id == IP_EVENT_STA_GOT_IP)) {
+        wifi_retry_count = 0;
         wifi_connected = true;
         if (mqtt_client == NULL && network_config.mqtt_broker_uri[0] != '\0') {
             ESP_ERROR_CHECK_WITHOUT_ABORT(initialize_mqtt_client());
@@ -692,11 +705,10 @@ static void initialize_network(void) {
     initialize_topics();
     initialize_network_stack();
 
-    wifi_prov_mgr_config_t prov_config = {
-        .scheme = wifi_prov_scheme_ble,
-        .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM,
-        .app_event_handler = WIFI_PROV_EVENT_HANDLER_NONE,
-    };
+    wifi_prov_mgr_config_t prov_config = {};
+    prov_config.scheme = wifi_prov_scheme_ble;
+    prov_config.scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM;
+    prov_config.app_event_handler = WIFI_PROV_EVENT_HANDLER_NONE;
     ESP_ERROR_CHECK(wifi_prov_mgr_init(prov_config));
 
     bool wifi_provisioned = false;
