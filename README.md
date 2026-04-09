@@ -23,7 +23,7 @@ The firmware coordinates:
 
 ## Hardware Pin Map
 
-From [`include/gpio_config.h`](/Users/elvisserem/projects/sunsense-blinds/sunsense-blinds/include/gpio_config.h):
+From `include/gpio_config.h`:
 
 - Button signal: `GPIO 3`
 - Green LED: `GPIO 5`

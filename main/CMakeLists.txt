@@ -5,6 +5,13 @@ idf_component_register(
         driver
         freertos
         esp_common
+        esp_event
+        esp_netif
+        esp_wifi
+        mqtt
+        nvs_flash
+        protocomm
+        wifi_provisioning
         button_controller
         mode_controller
         motor_controller
