@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+    xmlns:v="urn:schemas-microsoft-com:vml"
+    xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+    xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    xmlns:w10="urn:schemas-microsoft-com:office:word"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+    xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+    xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+    xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+    xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+    mc:Ignorable="w14 wp14">
+  <w:body>
+    <w:p><w:r><w:t>SunSense Blinds System Specification</w:t></w:r></w:p>
+    <w:p><w:r><w:t>This document summarizes the current SunSense product design so teammates can understand the hardware, software behavior, provisioning model, persistence strategy, and future connectivity direction.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>1. Purpose Of The System</w:t></w:r></w:p>
+    <w:p><w:r><w:t>SunSense is a smart blinds controller built around an ESP32-S3. It controls two physical functions: blind travel, meaning rolling the blinds up and down, and slat tilt, meaning opening and closing the slats. The goal is to combine automatic light-responsive behavior, manual override, persistent memory across power loss, secure provisioning, and phone-based control.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>2. Core Product Idea</w:t></w:r></w:p>
+    <w:p><w:r><w:t>SunSense has two main operating modes: AUTO and MANUAL. In AUTO, the system responds to light conditions. In MANUAL, the user’s command has higher priority than normal automatic behavior during bright conditions. However, MANUAL is not intended to dominate forever. We decided that once the environment becomes dark, the system should override MANUAL, return to automatic closing behavior, and close appropriately. This means user intent dominates during the day, but darkness reclaims control at night.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>3. Main Subsystems</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The main subsystems are the ESP32-S3 controller board, an LDR light sensor module, an AS5600 magnetic encoder, a servo motor for slat tilt, a DC gear motor for blind travel, an L298N motor driver, an INMP441 microphone, status LEDs, a temporary debug or service button, NVS storage, future Wi-Fi and MQTT integration, and future BLE provisioning.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>4. Mechanical Model</w:t></w:r></w:p>
+    <w:p><w:r><w:t>SunSense controls two separate mechanical axes. The first axis is blind travel, which is the rolling motion that raises and lowers the blinds. The second axis is slat tilt, which is the angular motion that opens and closes the slats. These must be treated as separate state variables and separate actuators.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>For the slats, we decided on a simple endpoint convention: 0 degrees means fully closed slats, and 90 degrees means fully open slats. The servo does not need continuous intermediate automatic behavior right now; it only needs to react at the bright and dark endpoints.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>For blind travel, the final convention still has one open calibration detail: the exact number of encoder rotations that correspond to the travel endpoints. That is still to be finalized during installation and calibration. Even so, we already agreed on the product-level home definition. Home must be the combined state of blinds fully rolled down and slats fully closed. In other words, home is blind travel at 0 rotations or whatever encoder reading is chosen as the installation baseline, together with slat angle at 0 degrees. All later motion should be defined relative to that known home reference.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>5. Motion Coordination Rule</w:t></w:r></w:p>
+    <w:p><w:r><w:t>One of the most important behavioral decisions is that the servo has higher logical priority than the roll motor. SunSense should not try to move both subsystems independently at the same instant. Instead, every coordinated action should follow this sequence: first decide the target action, then move the slats with the servo, then wait until the servo reaches its endpoint, and only then allow the rolling motor to move the blinds. This creates deterministic motion and avoids mechanical conflict.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>6. Sensor Interpretation</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The LDR is interpreted so that lower ADC values mean brighter conditions and higher ADC values mean darker conditions. The current thresholds are BRIGHT at or below 1200 and DARK at or above 1800. This creates hysteresis and prevents the system from flapping rapidly around a single threshold.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The AS5600 encoder is used to estimate blind position, stop the motor at endpoints, persist physical state in NVS, and recover state after power loss. The encoder is not just a debug sensor; it is part of the product’s memory of the actual physical blind position.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The INMP441 microphone is currently intended for future local command support. It is not the primary control path. The long-term main control path is the phone through Home Assistant over Wi-Fi.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>7. AUTO Mode Behavior</w:t></w:r></w:p>
+    <w:p><w:r><w:t>In AUTO mode, the LDR determines whether the environment is bright or dark. If it is bright, the slats should open to 90 degrees and the coordinated motion sequence can then continue into the matching blind action. If it is dark, the slats should close to 0 degrees and the coordinated motion sequence can then continue into the matching closing behavior. The important principle is that AUTO is sensor-driven and servo-first.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>8. MANUAL Mode Behavior</w:t></w:r></w:p>
+    <w:p><w:r><w:t>MANUAL mode is a user override mode. It has higher priority than normal AUTO behavior during bright conditions. This means the system should not keep fighting a user’s daytime choice. However, MANUAL is not supposed to dominate indefinitely. Once darkness is detected, the system should override MANUAL, return to automatic closing behavior, and close accordingly. This is one of the key product rules and should not be missed by the team.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>9. Boot Procedure</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended boot procedure is conservative and stateful. On power-up, the ESP32 should initialize the hardware controllers for the button, mode logic, motor, LEDs, LDR, encoder, servo, microphone, and connectivity stack. It should then load runtime state from NVS, restore the last known context, keep the motor stopped initially, and allow a short settle window before enabling automatic motion. This is intentional because the product should restore safely rather than blindly move the instant it boots.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The reason for a conservative boot procedure is that the sensors may need a moment to stabilize, encoder state may need to be reconciled, and the system should not surprise the user or cause unsafe motion immediately after power returns.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>10. NVS And Persistence</w:t></w:r></w:p>
+    <w:p><w:r><w:t>One of the main reasons for choosing this platform is non-volatile storage. SunSense is meant to remember meaningful state across power loss. Runtime persistence should eventually include at least the last known blind position, last operating mode, last light state, and last slat state. On boot, the system should prefer live encoder data if available, but fall back to persisted runtime state if needed. This allows the product to behave like it remembers the physical system rather than starting from zero every time power comes back.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>11. Reset Philosophy</w:t></w:r></w:p>
+    <w:p><w:r><w:t>We discussed three reset classes. A normal reboot should preserve runtime state, network configuration, and settings. A network reprovision reset should clear network credentials but keep runtime physical state and product identity. A factory reset should eventually first drive the system to home, meaning blinds fully down and slats closed, and then clear the appropriate user and runtime data while preserving factory identity data.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>12. What Comes With The Product</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended production package should include the SunSense controller hardware, the installed or attachable blinds mechanism, a service or setup identifier, a unique per-device provisioning secret, a QR code or printed setup label, and quick setup instructions. The provisioning label should identify the device ID, serial number, and setup code.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>13. BLE Provisioning Philosophy</w:t></w:r></w:p>
+    <w:p><w:r><w:t>BLE is intended primarily for provisioning, not for daily runtime control. We chose BLE because it supports phone-based onboarding, avoids hardcoded user credentials in firmware, and is well suited for a device that may be physically installed and not easily accessed. BLE provisioning should be secure and intentional. It should not always be open.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The agreed security model is that each device gets its own unique provisioning secret at manufacturing time. That secret is written into storage and printed on a label or QR code. Provisioning should only be allowed on first boot or after an explicit service trigger, and the user must authenticate with the per-device secret before network credentials are accepted.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>14. Provisioning Flow</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended first-boot provisioning flow is: the device powers on, checks for saved network credentials, enters BLE provisioning mode if none are found, advertises with a unique device identity, authenticates the user with the per-device setup secret, receives Wi-Fi and MQTT credentials, stores them in NVS, exits provisioning, and then proceeds into normal networked operation.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended reprovisioning flow is similar, but it should require an explicit physical or service trigger before BLE provisioning becomes available again. This is important so that nearby people cannot casually take over provisioning.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>15. Wi-Fi And Home Assistant Strategy</w:t></w:r></w:p>
+    <w:p><w:r><w:t>We decided that Wi-Fi is the primary production control path. The device should join the user’s network, connect to an MQTT broker, and appear in Home Assistant. The phone then becomes the real user interface. Home Assistant is the right long-term control surface because it gives phone control, dashboard control, automation support, Android and iPhone support, and later Siri support through HomeKit Bridge.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended Home Assistant model is one main cover entity for the blinds, one mode control for AUTO and MANUAL, and supporting sensors such as raw LDR, filtered LDR, light state, motor state, health state, and position.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>16. Production User Experience</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The intended user experience is: install the product, power it on, provision it securely over BLE if needed, let it join Wi-Fi and Home Assistant, then use the phone as the main interface. During the day, the user can override auto behavior through MANUAL mode. When it becomes dark, the system should return from MANUAL to automatic closing behavior. After power loss, the product should remember where it was and recover safely.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>17. Hardware Connections</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Button signal goes to GPIO 3. Green LED goes to GPIO 5. Blue LED goes to GPIO 6. LDR analog output goes to GPIO 1, with VCC at 3.3V and GND shared. The AS5600 encoder uses I2C with SDA on GPIO 8 and SCL on GPIO 9. The INMP441 microphone uses I2S with SCK or BCLK on GPIO 2, WS or LRCL on GPIO 4, and SD or DOUT on GPIO 7. The servo signal is on GPIO 10. The L298N motor driver uses IN1 on GPIO 12 and IN2 on GPIO 13. External power may be required for the servo and motor depending on load, and all grounds must be common with the ESP32.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>18. Key Decisions That Must Not Be Missed</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The team should treat the following as core product decisions: SunSense has two separate motion systems, blind travel and slat tilt. Slat endpoints are 0 degrees closed and 90 degrees open. Product home is blinds fully down and slats closed. Blind travel home must map to a known encoder reference, even though exact final rotations are still to be determined. MANUAL has higher priority than daytime AUTO behavior, but darkness overrides MANUAL and returns the system to automatic closing behavior. Servo action has higher logical priority than roll motor action, so slats move first and the roll motor follows only after the servo reaches its endpoint. Wi-Fi and Home Assistant are the main production control path. BLE is for secure provisioning. Each device should have a unique provisioning secret. Runtime state should survive power loss using NVS. Boot should restore safely rather than move blindly.</w:t></w:r></w:p>
+
+    <w:p><w:r><w:t>19. Recommended Diagram Set For Final Documentation</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The final polished documentation should include at least these diagrams: a system architecture diagram, a hardware wiring diagram, a mechanical model diagram, a boot flow diagram, a provisioning flow diagram, a mode precedence diagram, a motion sequencing diagram, and a persistence and recovery diagram.</w:t></w:r></w:p>
+
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>
