@@ -30,7 +30,8 @@ async def provision(args):
         if sec is None:
             raise RuntimeError("Failed to initialize provisioning security")
 
-        if not await esp_prov.version_match(transport, "v1.0", args.verbose):
+        # ESP-IDF 5.4 devices currently report protocomm provisioning version v1.1.
+        if not await esp_prov.version_match(transport, "v1.1", args.verbose):
             raise RuntimeError("Provisioning protocol version mismatch")
 
         if not await esp_prov.establish_session(transport, sec):
