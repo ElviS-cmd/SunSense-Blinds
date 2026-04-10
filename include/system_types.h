@@ -14,6 +14,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ============================================================================
  * OPERATING MODES
  * ========================================================================== */
@@ -186,5 +190,9 @@ const char* encoder_status_to_string(EncoderStatus_t status);
  * @return SystemConfig_t with default values
  */
 SystemConfig_t get_default_config(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SYSTEM_TYPES_H */

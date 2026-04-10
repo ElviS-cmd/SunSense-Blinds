@@ -1,0 +1,263 @@
+/**
+ * @file mqtt_handlers.cpp
+ * @brief MQTT command handlers and state publishing
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "mqtt_client.h"
+#include "wifi_provisioning/manager.h"
+#include "mqtt_handlers.h"
+#include "network.h"
+
+static const char *TAG = "MQTT";
+
+/* ============================================================================
+ * STATE STRING HELPERS
+ * ========================================================================== */
+
+static const char *cover_state_to_string(MotorState_t motor_state, float position_percent) {
+    if (motor_state == MOTOR_OPENING) return "opening";
+    if (motor_state == MOTOR_CLOSING) return "closing";
+    if (position_percent <= 1.0f)    return "closed";
+    if (position_percent >= 99.0f)   return "open";
+    return "stopped";
+}
+
+static const char *slat_state_to_string(float angle) {
+    if (angle <= 5.0f)  return "closed";
+    if (angle >= 85.0f) return "open";
+    return "moving";
+}
+
+/* ============================================================================
+ * MQTT PUBLISH HELPERS
+ * ========================================================================== */
+
+static void mqtt_publish_string(const char *topic, const char *value) {
+    if (!mqtt_connected || mqtt_client == NULL) {
+        return;
+    }
+    esp_mqtt_client_publish(mqtt_client, topic, value, 0, 1, 0);
+}
+
+static void mqtt_publish_int(const char *topic, int value) {
+    char buffer[16];
+    snprintf(buffer, sizeof(buffer), "%d", value);
+    mqtt_publish_string(topic, buffer);
+}
+
+static void mqtt_publish_float(const char *topic, float value) {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%.1f", value);
+    mqtt_publish_string(topic, buffer);
+}
+
+/* ============================================================================
+ * STATE PUBLISHING
+ * ========================================================================== */
+
+static void publish_state_snapshot(const PublishSnapshot_t *snapshot) {
+    wifi_ap_record_t ap_info = {};
+    bool have_rssi = wifi_connected && (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
+
+    mqtt_publish_string(topics.state_mode,         mode_to_string(snapshot->system.current_mode));
+    mqtt_publish_string(topics.state_cover,        cover_state_to_string(snapshot->system.motor_state, snapshot->encoder_percent));
+    mqtt_publish_float (topics.state_position,     snapshot->encoder_percent);
+    mqtt_publish_int   (topics.state_light_raw,    snapshot->ldr_raw);
+    mqtt_publish_int   (topics.state_light_filtered, snapshot->ldr_filtered);
+    mqtt_publish_string(topics.state_light_state,  light_level_to_string(snapshot->system.light_level));
+    mqtt_publish_string(topics.state_motor,        motor_state_to_string(snapshot->system.motor_state));
+    mqtt_publish_string(topics.state_slat,         slat_state_to_string(snapshot->servo_angle));
+    mqtt_publish_string(topics.state_health,       snapshot->system.system_healthy ? "ok" : "fault");
+    mqtt_publish_string(topics.state_network_online, wifi_connected ? "true" : "false");
+    if (have_rssi) {
+        mqtt_publish_int(topics.state_network_rssi, ap_info.rssi);
+    }
+}
+
+void publish_state_if_ready(void) {
+    if (!network_ready || !mqtt_connected) {
+        return;
+    }
+
+    PublishSnapshot_t snapshot = {};
+    if (lock_state()) {
+        collect_publish_snapshot_locked(&snapshot);
+        unlock_state();
+    } else {
+        return;
+    }
+
+    publish_state_snapshot(&snapshot);
+}
+
+/* ============================================================================
+ * COMMAND HANDLERS
+ * ========================================================================== */
+
+static bool topic_matches(const char *expected, const char *actual, int actual_len) {
+    size_t expected_len = strlen(expected);
+    return (expected_len == (size_t) actual_len) && (strncmp(expected, actual, expected_len) == 0);
+}
+
+static void handle_mode_command(const char *payload, int len) {
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    if (!lock_state()) {
+        return;
+    }
+
+    if ((len == 4) && (strncmp(payload, "AUTO", 4) == 0)) {
+        mode_return_to_auto(&mode, current_time);
+        auto_command_pending = system_health.ldr_ok;
+        manual_next_open = true;
+    } else if ((len == 6) && (strncmp(payload, "MANUAL", 6) == 0)) {
+        apply_manual_mode_locked(current_time);
+    } else {
+        ESP_LOGW(TAG, "Ignoring unknown mode command");
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
+    unlock_state();
+}
+
+static void handle_cover_command(const char *payload, int len) {
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    if (!lock_state()) {
+        return;
+    }
+
+    apply_manual_mode_locked(current_time);
+
+    if ((len == 4) && (strncmp(payload, "OPEN", 4) == 0)) {
+        motor_set_opening(&motor, current_time);
+        manual_next_open = false;
+    } else if ((len == 5) && (strncmp(payload, "CLOSE", 5) == 0)) {
+        motor_set_closing(&motor, current_time);
+        manual_next_open = true;
+    } else if ((len == 4) && (strncmp(payload, "STOP", 4) == 0)) {
+        stop_motor_locked(current_time);
+    } else {
+        ESP_LOGW(TAG, "Ignoring unknown cover command");
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
+    system_state.motor_state  = motor_get_state(&motor);
+    unlock_state();
+}
+
+static void handle_position_command(const char *payload, int len) {
+    char buffer[8] = {};
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    if (len <= 0 || len >= (int) sizeof(buffer)) {
+        ESP_LOGW(TAG, "Ignoring invalid position command");
+        return;
+    }
+
+    memcpy(buffer, payload, len);
+    char *endptr = NULL;
+    long requested_position = strtol(buffer, &endptr, 10);
+    if (endptr == buffer || requested_position < 0 || requested_position > 100) {
+        ESP_LOGW(TAG, "Ignoring invalid position command");
+        return;
+    }
+
+    if (!lock_state()) {
+        return;
+    }
+
+    apply_manual_mode_locked(current_time);
+
+    float current_position = system_health.encoder_ok ? encoder_get_percent(&encoder) : 0.0f;
+    if (requested_position > (int)(current_position + 1.0f)) {
+        motor_set_opening(&motor, current_time);
+        manual_next_open = false;
+    } else if (requested_position < (int)(current_position - 1.0f)) {
+        motor_set_closing(&motor, current_time);
+        manual_next_open = true;
+    } else {
+        stop_motor_locked(current_time);
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
+    system_state.motor_state  = motor_get_state(&motor);
+    unlock_state();
+}
+
+static void handle_system_command(const char *payload, int len) {
+    if ((len == 7) && (strncmp(payload, "GO_HOME", 7) == 0)) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (lock_state()) {
+            apply_manual_mode_locked(current_time);
+            servo_close(&servo, current_time);
+            motor_set_closing(&motor, current_time);
+            manual_next_open = true;
+            system_state.current_mode = mode_get_current(&mode);
+            system_state.motor_state  = motor_get_state(&motor);
+            unlock_state();
+        }
+    } else if ((len == 11) && (strncmp(payload, "REPROVISION", 11) == 0)) {
+        if (clear_network_config_from_nvs() == ESP_OK) {
+            wifi_prov_mgr_reset_provisioning();
+            ESP_LOGW(TAG, "Network settings cleared from NVS; restarting for reprovision");
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "Failed to clear network settings for reprovision");
+        }
+    } else {
+        ESP_LOGW(TAG, "Ignoring unknown system command");
+    }
+}
+
+static void handle_mqtt_data_event(const esp_mqtt_event_t *event) {
+    if (topic_matches(topics.cmd_cover,    event->topic, event->topic_len)) {
+        handle_cover_command(event->data, event->data_len);
+    } else if (topic_matches(topics.cmd_mode,  event->topic, event->topic_len)) {
+        handle_mode_command(event->data, event->data_len);
+    } else if (topic_matches(topics.cmd_position, event->topic, event->topic_len)) {
+        handle_position_command(event->data, event->data_len);
+    } else if (topic_matches(topics.cmd_system,  event->topic, event->topic_len)) {
+        handle_system_command(event->data, event->data_len);
+    }
+
+    publish_state_if_ready();
+}
+
+/* ============================================================================
+ * MQTT EVENT HANDLER
+ * ========================================================================== */
+
+void mqtt_event_handler(void *handler_args,
+                        esp_event_base_t base,
+                        int32_t event_id,
+                        void *event_data) {
+    (void) handler_args;
+    (void) base;
+
+    esp_mqtt_event_handle_t event = static_cast<esp_mqtt_event_handle_t>(event_data);
+    switch ((esp_mqtt_event_id_t) event_id) {
+        case MQTT_EVENT_CONNECTED:
+            mqtt_connected = true;
+            esp_mqtt_client_subscribe(mqtt_client, topics.cmd_cover,    1);
+            esp_mqtt_client_subscribe(mqtt_client, topics.cmd_mode,     1);
+            esp_mqtt_client_subscribe(mqtt_client, topics.cmd_position, 1);
+            esp_mqtt_client_subscribe(mqtt_client, topics.cmd_system,   1);
+            publish_state_if_ready();
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            mqtt_connected = false;
+            break;
+        case MQTT_EVENT_DATA:
+            handle_mqtt_data_event(event);
+            break;
+        default:
+            break;
+    }
+}
