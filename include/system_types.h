@@ -100,6 +100,28 @@ typedef enum {
 } SystemEvent_t;
 
 /* ============================================================================
+ * SYSTEM COMMANDS
+ * ========================================================================== */
+
+typedef enum {
+    COMMAND_NONE = 0,
+    COMMAND_OPEN,
+    COMMAND_CLOSE,
+    COMMAND_STOP,
+    COMMAND_SET_AUTO,
+    COMMAND_SET_MANUAL,
+    COMMAND_RETURN_TO_AUTO,
+    COMMAND_STOP_ALL
+} SystemCommand_t;
+
+typedef enum {
+    COMMAND_SOURCE_NONE = 0,
+    COMMAND_SOURCE_BUTTON,
+    COMMAND_SOURCE_MQTT,
+    COMMAND_SOURCE_MICROPHONE
+} CommandSource_t;
+
+/* ============================================================================
  * SHARED STRUCTURES
  * ========================================================================== */
 
@@ -117,6 +139,12 @@ typedef struct {
         void *pointer;
     } data;
 } SystemEvent_Queue_t;
+
+typedef struct {
+    SystemCommand_t command;
+    CommandSource_t source;
+    uint32_t timestamp;
+} SystemCommandMessage_t;
 
 /**
  * @brief System configuration (could be persisted to NVS)
@@ -184,6 +212,13 @@ const char* light_level_to_string(LightLevel_t level);
  * @return String representation
  */
 const char* encoder_status_to_string(EncoderStatus_t status);
+
+/**
+ * @brief Convert system command to string
+ * @param command System command enum
+ * @return String representation
+ */
+const char* system_command_to_string(SystemCommand_t command);
 
 /**
  * @brief Get default system configuration

@@ -60,6 +60,8 @@ void unlock_state(void);
 void apply_manual_mode_locked(uint32_t current_time);
 void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot);
 void stop_motor_locked(uint32_t current_time);
+void begin_open_sequence_locked(uint32_t current_time);
+void begin_close_sequence_locked(uint32_t current_time);
 
 /* ============================================================================
  * FUNCTIONS DEFINED IN mqtt_handlers.cpp

@@ -44,8 +44,8 @@ static uint32_t angle_to_duty(float angle) {
 
 bool servo_init(ServoController_t *servo) {
     memset(servo, 0, sizeof(ServoController_t));
-    servo->current_angle = 90.0f;   // Start at center
-    servo->target_angle = 90.0f;
+    servo->current_angle = SERVO_SLAT_CLOSED_ANGLE;
+    servo->target_angle = SERVO_SLAT_CLOSED_ANGLE;
     servo->state = SERVO_IDLE;
     servo->is_moving = false;
     
@@ -68,7 +68,7 @@ bool servo_init(ServoController_t *servo) {
         .timer_sel = SERVO_PWM_TIMER,
         .intr_type = LEDC_INTR_DISABLE,
         .gpio_num = GPIO_SERVO,
-        .duty = angle_to_duty(90.0f),  // Start at 90°
+        .duty = angle_to_duty(SERVO_SLAT_CLOSED_ANGLE),
         .hpoint = 0,
     };
     
@@ -77,7 +77,7 @@ bool servo_init(ServoController_t *servo) {
     }
     
     /* Set initial PWM */
-    ledc_set_duty(SERVO_PWM_MODE, SERVO_PWM_CHANNEL, angle_to_duty(90.0f));
+    ledc_set_duty(SERVO_PWM_MODE, SERVO_PWM_CHANNEL, angle_to_duty(SERVO_SLAT_CLOSED_ANGLE));
     ledc_update_duty(SERVO_PWM_MODE, SERVO_PWM_CHANNEL);
     
     return true;
@@ -108,11 +108,11 @@ void servo_move_to(ServoController_t *servo, float target_angle, uint32_t curren
 }
 
 void servo_open(ServoController_t *servo, uint32_t current_time) {
-    servo_move_to(servo, 0.0f, current_time);
+    servo_move_to(servo, SERVO_SLAT_OPEN_ANGLE, current_time);
 }
 
 void servo_close(ServoController_t *servo, uint32_t current_time) {
-    servo_move_to(servo, 180.0f, current_time);
+    servo_move_to(servo, SERVO_SLAT_CLOSED_ANGLE, current_time);
 }
 
 void servo_center(ServoController_t *servo, uint32_t current_time) {

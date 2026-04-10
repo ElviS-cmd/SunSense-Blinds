@@ -19,8 +19,6 @@
 typedef struct {
     OperatingMode_t current_mode;
     uint32_t last_mode_change_time;
-    uint32_t idle_start_time;
-    bool idle_timer_active;
     bool changed_since_last_check;
 } ModeController_t;
 
@@ -29,6 +27,7 @@ void mode_handle_button(ModeController_t *mode, ButtonAction_t button_action, ui
 void mode_update_idle(ModeController_t *mode, uint32_t current_time);
 void mode_note_activity(ModeController_t *mode, uint32_t current_time);
 OperatingMode_t mode_get_current(ModeController_t *mode);
+void mode_set_manual(ModeController_t *mode, uint32_t current_time);
 void mode_cycle_next(ModeController_t *mode, uint32_t current_time);
 void mode_return_to_auto(ModeController_t *mode, uint32_t current_time);
 bool mode_changed(ModeController_t *mode);

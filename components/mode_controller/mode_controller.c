@@ -7,8 +7,6 @@
 
 #include <string.h>
 
-#define MODE_IDLE_TIMEOUT_MS 5000
-
 static void mark_mode_changed(ModeController_t *mode, uint32_t current_time) {
     mode->last_mode_change_time = current_time;
     mode->changed_since_last_check = true;
@@ -22,32 +20,32 @@ void mode_init(ModeController_t *mode) {
 void mode_handle_button(ModeController_t *mode, ButtonAction_t button_action, uint32_t current_time) {
     if (button_action == BUTTON_ACTION_SHORT) {
         mode_cycle_next(mode, current_time);
-        mode->idle_start_time = current_time;
-        mode->idle_timer_active = true;
     } else if (button_action == BUTTON_ACTION_LONG) {
         mode_return_to_auto(mode, current_time);
-        mode->idle_timer_active = false;
     }
 }
 
 void mode_update_idle(ModeController_t *mode, uint32_t current_time) {
-    if (!mode->idle_timer_active) {
-        return;
-    }
-
-    if ((current_time - mode->idle_start_time) >= MODE_IDLE_TIMEOUT_MS) {
-        mode_return_to_auto(mode, current_time);
-        mode->idle_timer_active = false;
-    }
+    (void)mode;
+    (void)current_time;
 }
 
 void mode_note_activity(ModeController_t *mode, uint32_t current_time) {
-    mode->idle_start_time = current_time;
-    mode->idle_timer_active = true;
+    (void)mode;
+    (void)current_time;
 }
 
 OperatingMode_t mode_get_current(ModeController_t *mode) {
     return mode->current_mode;
+}
+
+void mode_set_manual(ModeController_t *mode, uint32_t current_time) {
+    if (mode->current_mode == MODE_MANUAL) {
+        return;
+    }
+
+    mode->current_mode = MODE_MANUAL;
+    mark_mode_changed(mode, current_time);
 }
 
 void mode_cycle_next(ModeController_t *mode, uint32_t current_time) {

@@ -27,7 +27,13 @@ static bool encoder_read_register(uint8_t reg, uint8_t *data, uint8_t len) {
         return false;
     }
     
-    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg, 1, data, len, -1);
+    esp_err_t ret = i2c_master_transmit_receive(
+        dev_handle,
+        &reg,
+        1,
+        data,
+        len,
+        I2C_TRANSACTION_TIMEOUT_MS);
     return (ret == ESP_OK);
 }
 

@@ -63,11 +63,34 @@ const char* encoder_status_to_string(EncoderStatus_t status) {
     }
 }
 
+const char* system_command_to_string(SystemCommand_t command) {
+    switch (command) {
+        case COMMAND_NONE:
+            return "NONE";
+        case COMMAND_OPEN:
+            return "OPEN";
+        case COMMAND_CLOSE:
+            return "CLOSE";
+        case COMMAND_STOP:
+            return "STOP";
+        case COMMAND_SET_AUTO:
+            return "SET_AUTO";
+        case COMMAND_SET_MANUAL:
+            return "SET_MANUAL";
+        case COMMAND_RETURN_TO_AUTO:
+            return "RETURN_TO_AUTO";
+        case COMMAND_STOP_ALL:
+            return "STOP_ALL";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 SystemConfig_t get_default_config(void) {
     SystemConfig_t config = {
-        .ldr_dark_threshold = 1500,
-        .ldr_bright_threshold = 2500,
-        .ldr_hysteresis = 200,
+        .ldr_dark_threshold = 1800,
+        .ldr_bright_threshold = 1200,
+        .ldr_hysteresis = 600,
         .audio_threshold = 1000,
         .motor_timeout_ms = 30000,
         .servo_speed_ms = 50,

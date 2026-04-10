@@ -94,11 +94,11 @@ void ldr_update(LDRController_t *ldr, uint32_t current_time) {
     /* Store previous level for change detection */
     ldr->previous_level = ldr->current_level;
     
-    /* Apply hysteresis logic */
-    if (ldr->filtered_value < LDR_DARK_THRESHOLD) {
-        ldr->current_level = LIGHT_DARK;
-    } else if (ldr->filtered_value > LDR_BRIGHT_THRESHOLD) {
+    /* Lower ADC values mean bright light, higher values mean darkness. */
+    if (ldr->filtered_value <= LDR_BRIGHT_THRESHOLD) {
         ldr->current_level = LIGHT_BRIGHT;
+    } else if (ldr->filtered_value >= LDR_DARK_THRESHOLD) {
+        ldr->current_level = LIGHT_DARK;
     }
     /* Else: stay in current state (hysteresis band) */
     

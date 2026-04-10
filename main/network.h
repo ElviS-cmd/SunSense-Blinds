@@ -14,6 +14,8 @@
  * ========================================================================== */
 
 static constexpr size_t MQTT_URI_MAX_LEN     = 128;
+static constexpr size_t MQTT_USERNAME_MAX_LEN = 64;
+static constexpr size_t MQTT_PASSWORD_MAX_LEN = 64;
 static constexpr size_t DEVICE_ID_MAX_LEN    = 48;
 static constexpr size_t TOPIC_ROOT_MAX_LEN   = 32;
 static constexpr size_t SETUP_POP_MAX_LEN    = 32;
@@ -21,6 +23,8 @@ static constexpr size_t SERVICE_NAME_MAX_LEN = 29;
 
 static constexpr const char *NVS_NAMESPACE_NETWORK = "network";
 static constexpr const char *NVS_KEY_MQTT_URI       = "mqtt_uri";
+static constexpr const char *NVS_KEY_MQTT_USER      = "mqtt_user";
+static constexpr const char *NVS_KEY_MQTT_PASS      = "mqtt_pass";
 static constexpr const char *NVS_KEY_DEVICE_ID      = "device_id";
 static constexpr const char *NVS_KEY_SETUP_POP      = "setup_pop";
 static constexpr const char *DEFAULT_TOPIC_ROOT     = "sunsense";
@@ -50,6 +54,8 @@ typedef struct {
 
 typedef struct {
     char mqtt_broker_uri[MQTT_URI_MAX_LEN + 1];
+    char mqtt_username[MQTT_USERNAME_MAX_LEN + 1];
+    char mqtt_password[MQTT_PASSWORD_MAX_LEN + 1];
     char device_id[DEVICE_ID_MAX_LEN + 1];
     char topic_root[TOPIC_ROOT_MAX_LEN + 1];
     char setup_pop[SETUP_POP_MAX_LEN + 1];

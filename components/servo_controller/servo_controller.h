@@ -5,7 +5,7 @@
  * @date 2026
  * 
  * MG996R servo motor control via PWM on GPIO10
- * Controls slat tilt angle (0-180°)
+ * Controls SunSense slat tilt
  */
 
 #ifndef SERVO_CONTROLLER_H
@@ -48,14 +48,14 @@ bool servo_init(ServoController_t *servo);
 void servo_move_to(ServoController_t *servo, float target_angle, uint32_t current_time);
 
 /**
- * @brief Move servo to fully open (0°)
+ * @brief Move servo to slats open (90°)
  * @param servo Pointer to ServoController_t structure
  * @param current_time Current time in milliseconds
  */
 void servo_open(ServoController_t *servo, uint32_t current_time);
 
 /**
- * @brief Move servo to fully closed (180°)
+ * @brief Move servo to slats closed (0°)
  * @param servo Pointer to ServoController_t structure
  * @param current_time Current time in milliseconds
  */

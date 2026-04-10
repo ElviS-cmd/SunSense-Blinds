@@ -36,6 +36,7 @@
 
 #define I2C_MASTER_PORT         I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ      100000
+#define I2C_TRANSACTION_TIMEOUT_MS 50
 
 #define AS5600_I2C_ADDR         0x36
 #define AS5600_REG_RAW_ANGLE    0x0C
@@ -75,6 +76,9 @@
 #define SERVO_PWM_MID_US        1500
 #define SERVO_PWM_MAX_US        2000
 
+#define SERVO_SLAT_CLOSED_ANGLE 0.0f
+#define SERVO_SLAT_OPEN_ANGLE   90.0f
+
 #define SERVO_DUTY_MIN          ((SERVO_PWM_MIN_US * 4095) / 20000)
 #define SERVO_DUTY_MID          ((SERVO_PWM_MID_US * 4095) / 20000)
 #define SERVO_DUTY_MAX          ((SERVO_PWM_MAX_US * 4095) / 20000)
@@ -97,9 +101,10 @@
 #define ADC_RESOLUTION          ADC_BITWIDTH_12
 #define ADC_ATTEN               ADC_ATTEN_DB_12
 
-#define LDR_DARK_THRESHOLD      1500
-#define LDR_BRIGHT_THRESHOLD    2500
-#define LDR_HYSTERESIS          200
+/* Lower ADC values mean more light on this module, higher values mean darker. */
+#define LDR_BRIGHT_THRESHOLD    1200
+#define LDR_DARK_THRESHOLD      1800
+#define LDR_HYSTERESIS          600
 
 /* ============================================================================
  * FreeRTOS TASK CONFIGURATION
@@ -144,5 +149,13 @@
 #define SERVO_SPEED_FAST        20
 
 #define MOTOR_RAMP_TIME         500
+
+/* ============================================================================
+ * RUNTIME PERSISTENCE / RECOVERY
+ * ========================================================================== */
+
+#define RUNTIME_POSITION_SAVE_DELTA     5U
+#define RUNTIME_POSITION_SAVE_INTERVAL_MS 5000U
+#define AUTO_STARTUP_SETTLE_MS          3000U
 
 #endif /* GPIO_CONFIG_H */

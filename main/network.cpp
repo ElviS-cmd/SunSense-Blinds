@@ -57,6 +57,26 @@ static esp_err_t load_nvs_string(nvs_handle_t handle,
     return err;
 }
 
+static void trim_whitespace(char *value) {
+    char *start = value;
+    char *end = NULL;
+
+    while ((*start == ' ') || (*start == '\t') || (*start == '\n') || (*start == '\r')) {
+        start++;
+    }
+
+    if (start != value) {
+        memmove(value, start, strlen(start) + 1U);
+    }
+
+    end = value + strlen(value);
+    while ((end > value) &&
+           ((end[-1] == ' ') || (end[-1] == '\t') || (end[-1] == '\n') || (end[-1] == '\r'))) {
+        end--;
+    }
+    *end = '\0';
+}
+
 esp_err_t save_nvs_string(const char *key, const char *value) {
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(NVS_NAMESPACE_NETWORK, NVS_READWRITE, &handle);
@@ -78,6 +98,8 @@ esp_err_t clear_network_config_from_nvs(void) {
         return err;
     }
     nvs_erase_key(handle, NVS_KEY_MQTT_URI);
+    nvs_erase_key(handle, NVS_KEY_MQTT_USER);
+    nvs_erase_key(handle, NVS_KEY_MQTT_PASS);
     nvs_commit(handle);
     nvs_close(handle);
     return ESP_OK;
@@ -128,6 +150,8 @@ static esp_err_t load_network_config_from_nvs(void) {
     }
 
     load_nvs_string(handle, NVS_KEY_MQTT_URI,  network_config.mqtt_broker_uri, sizeof(network_config.mqtt_broker_uri));
+    load_nvs_string(handle, NVS_KEY_MQTT_USER, network_config.mqtt_username,   sizeof(network_config.mqtt_username));
+    load_nvs_string(handle, NVS_KEY_MQTT_PASS, network_config.mqtt_password,   sizeof(network_config.mqtt_password));
     load_nvs_string(handle, NVS_KEY_DEVICE_ID, network_config.device_id,       sizeof(network_config.device_id));
     load_nvs_string(handle, NVS_KEY_SETUP_POP, network_config.setup_pop,       sizeof(network_config.setup_pop));
     nvs_close(handle);
@@ -201,6 +225,12 @@ static esp_err_t initialize_mqtt_client(void) {
     esp_mqtt_client_config_t mqtt_config = {};
     mqtt_config.broker.address.uri  = network_config.mqtt_broker_uri;
     mqtt_config.credentials.client_id = network_config.device_id;
+    if (network_config.mqtt_username[0] != '\0') {
+        mqtt_config.credentials.username = network_config.mqtt_username;
+    }
+    if (network_config.mqtt_password[0] != '\0') {
+        mqtt_config.credentials.authentication.password = network_config.mqtt_password;
+    }
 
     mqtt_client = esp_mqtt_client_init(&mqtt_config);
     if (mqtt_client == NULL) {
@@ -226,30 +256,70 @@ static esp_err_t mqtt_config_endpoint_handler(uint32_t session_id,
     (void) session_id;
     (void) priv_data;
 
-    if (inbuf == NULL || inlen <= 0 || inlen > MQTT_URI_MAX_LEN) {
+    if (inbuf == NULL || inlen <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    char *payload = static_cast<char *>(calloc((size_t)inlen + 1U, sizeof(char)));
+    if (payload == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(payload, inbuf, (size_t)inlen);
+
     char mqtt_uri[MQTT_URI_MAX_LEN + 1] = {};
-    memcpy(mqtt_uri, inbuf, inlen);
+    char mqtt_user[MQTT_USERNAME_MAX_LEN + 1] = {};
+    char mqtt_pass[MQTT_PASSWORD_MAX_LEN + 1] = {};
+
+    char *line = strtok(payload, "\n");
+    while (line != NULL) {
+        char *separator = strchr(line, '=');
+        if (separator != NULL) {
+            *separator = '\0';
+            char *key = line;
+            char *value = separator + 1;
+            trim_whitespace(key);
+            trim_whitespace(value);
+
+            if (strcmp(key, "uri") == 0) {
+                strncpy(mqtt_uri, value, sizeof(mqtt_uri) - 1U);
+            } else if (strcmp(key, "username") == 0) {
+                strncpy(mqtt_user, value, sizeof(mqtt_user) - 1U);
+            } else if (strcmp(key, "password") == 0) {
+                strncpy(mqtt_pass, value, sizeof(mqtt_pass) - 1U);
+            }
+        }
+        line = strtok(NULL, "\n");
+    }
 
     if (strncmp(mqtt_uri, "mqtt://", 7) != 0 && strncmp(mqtt_uri, "mqtts://", 8) != 0) {
+        free(payload);
         return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t err = save_nvs_string(NVS_KEY_MQTT_URI, mqtt_uri);
+    if (err == ESP_OK) {
+        err = save_nvs_string(NVS_KEY_MQTT_USER, mqtt_user);
+    }
+    if (err == ESP_OK) {
+        err = save_nvs_string(NVS_KEY_MQTT_PASS, mqtt_pass);
+    }
     if (err != ESP_OK) {
+        free(payload);
         return err;
     }
 
     strncpy(network_config.mqtt_broker_uri, mqtt_uri, sizeof(network_config.mqtt_broker_uri) - 1U);
+    strncpy(network_config.mqtt_username, mqtt_user, sizeof(network_config.mqtt_username) - 1U);
+    strncpy(network_config.mqtt_password, mqtt_pass, sizeof(network_config.mqtt_password) - 1U);
 
     const char response[] = "SUCCESS";
     *outbuf = reinterpret_cast<uint8_t *>(strdup(response));
     if (*outbuf == NULL) {
+        free(payload);
         return ESP_ERR_NO_MEM;
     }
     *outlen = sizeof(response);
+    free(payload);
     return ESP_OK;
 }
 
@@ -391,7 +461,7 @@ void initialize_network(void) {
 
         ESP_LOGI(TAG, "Provision with BLE service name: %s", service_name);
         ESP_LOGI(TAG, "Use setup code: %s", network_config.setup_pop);
-        ESP_LOGI(TAG, "Send MQTT broker URI to custom endpoint: %s", MQTT_CONFIG_ENDPOINT);
+        ESP_LOGI(TAG, "Send MQTT config to %s using lines: uri=..., username=..., password=...", MQTT_CONFIG_ENDPOINT);
         return;
     }
 

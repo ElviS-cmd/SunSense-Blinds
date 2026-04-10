@@ -17,6 +17,7 @@ extern "C" {
     #include "button_controller.h"
     #include "led_controller.h"
     #include "microphone_controller.h"
+    #include "runtime_state.h"
 }
 
 static const char *TAG = "SunSense";
@@ -44,6 +45,14 @@ SystemConfig_t system_config = {};
 bool           auto_command_pending = false;
 bool           manual_next_open     = true;
 
+typedef enum {
+    CONTROL_SEQUENCE_NONE = 0,
+    CONTROL_SEQUENCE_WAIT_SERVO_OPEN,
+    CONTROL_SEQUENCE_WAIT_SERVO_CLOSE,
+    CONTROL_SEQUENCE_MOVE_OPEN,
+    CONTROL_SEQUENCE_MOVE_CLOSE,
+} ControlSequenceState_t;
+
 /* ============================================================================
  * TASK HANDLES AND SYNCHRONISATION
  * ========================================================================== */
@@ -56,10 +65,89 @@ static TaskHandle_t     task_ldr        = NULL;
 static TaskHandle_t     task_encoder    = NULL;
 static TaskHandle_t     task_microphone = NULL;
 static SemaphoreHandle_t state_mutex    = NULL;
+static RuntimeStateController_t runtime_state = {};
+static ControlSequenceState_t   control_sequence = CONTROL_SEQUENCE_NONE;
+static bool                     runtime_position_valid = false;
+static uint8_t                  runtime_position_percent = 0U;
+static uint8_t                  last_saved_position_percent = 0U;
+static bool                     runtime_save_pending = false;
+static uint32_t                 last_runtime_save_time = 0U;
+static uint32_t                 auto_actions_enabled_after_ms = 0U;
 
 /* ============================================================================
  * STATE MUTEX HELPERS
  * ========================================================================== */
+
+static uint8_t clamp_percent_to_u8(float percent) {
+    if (percent <= 0.0f) {
+        return 0U;
+    }
+    if (percent >= 100.0f) {
+        return 100U;
+    }
+    return static_cast<uint8_t>(percent + 0.5f);
+}
+
+static bool get_position_snapshot_locked(uint8_t *position_percent) {
+    if (position_percent == NULL) {
+        return false;
+    }
+
+    if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
+        *position_percent = clamp_percent_to_u8(encoder_get_percent(&encoder));
+        return true;
+    }
+
+    if (runtime_position_valid) {
+        *position_percent = runtime_position_percent;
+        return true;
+    }
+
+    return false;
+}
+
+static RuntimeStateSnapshot_t build_runtime_snapshot_locked(void) {
+    RuntimeStateSnapshot_t snapshot = {};
+    uint8_t position_percent = 0U;
+
+    snapshot.state_version = RUNTIME_STATE_SCHEMA_VERSION;
+    snapshot.position_valid = get_position_snapshot_locked(&position_percent);
+    snapshot.position_percent = position_percent;
+    snapshot.mode = mode_get_current(&mode);
+    snapshot.light_level = ldr_get_level(&ldr);
+    snapshot.slat_angle_valid = system_health.servo_ok;
+    snapshot.slat_angle_deg = system_health.servo_ok
+        ? static_cast<uint8_t>(servo_get_target(&servo) + 0.5f)
+        : 0U;
+
+    return snapshot;
+}
+
+static void request_runtime_save_locked(void) {
+    runtime_save_pending = true;
+}
+
+static void clear_control_sequence_locked(void) {
+    control_sequence = CONTROL_SEQUENCE_NONE;
+}
+
+static void update_servo_for_light_locked(uint32_t current_time) {
+    if (!system_health.servo_ok || mode_get_current(&mode) != MODE_AUTO) {
+        return;
+    }
+
+    if (ldr_is_bright(&ldr)) {
+        if (servo_get_target(&servo) != SERVO_SLAT_OPEN_ANGLE) {
+            servo_open(&servo, current_time);
+            request_runtime_save_locked();
+        }
+    } else if (ldr_is_dark(&ldr)) {
+        if (servo_get_target(&servo) != SERVO_SLAT_CLOSED_ANGLE) {
+            servo_close(&servo, current_time);
+            request_runtime_save_locked();
+        }
+    }
+}
 
 bool lock_state(void) {
     return (xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE);
@@ -74,18 +162,23 @@ void unlock_state(void) {
  * ========================================================================== */
 
 void apply_manual_mode_locked(uint32_t current_time) {
-    if (mode_get_current(&mode) != MODE_MANUAL) {
-        mode_cycle_next(&mode, current_time);
-        system_state.current_mode = mode_get_current(&mode);
-    }
-    mode_note_activity(&mode, current_time);
+    mode_set_manual(&mode, current_time);
+    system_state.current_mode = mode_get_current(&mode);
+    request_runtime_save_locked();
 }
 
 void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot) {
+    uint8_t position_percent = 0U;
     snapshot->system        = system_state;
     snapshot->ldr_raw       = system_health.ldr_ok ? ldr_get_raw(&ldr)       : 0;
     snapshot->ldr_filtered  = system_health.ldr_ok ? ldr_get_filtered(&ldr)  : 0;
-    snapshot->encoder_percent = system_health.encoder_ok ? encoder_get_percent(&encoder) : 0.0f;
+    if (system_health.encoder_ok) {
+        snapshot->encoder_percent = encoder_get_percent(&encoder);
+    } else if (get_position_snapshot_locked(&position_percent)) {
+        snapshot->encoder_percent = position_percent;
+    } else {
+        snapshot->encoder_percent = 0.0f;
+    }
     snapshot->servo_angle   = system_health.servo_ok ? servo_get_angle(&servo) : 0.0f;
 }
 
@@ -93,7 +186,143 @@ void stop_motor_locked(uint32_t current_time) {
     if (motor_is_running(&motor)) {
         motor_stop(&motor, current_time);
         system_state.motor_state = motor_get_state(&motor);
+        request_runtime_save_locked();
     }
+}
+
+void begin_open_sequence_locked(uint32_t current_time) {
+    if (system_health.servo_ok) {
+        if (servo_get_target(&servo) != SERVO_SLAT_OPEN_ANGLE) {
+            servo_open(&servo, current_time);
+        }
+        if (!servo_at_target(&servo)) {
+            control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_OPEN;
+            return;
+        }
+    }
+
+    control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
+}
+
+void begin_close_sequence_locked(uint32_t current_time) {
+    if (system_health.servo_ok) {
+        if (servo_get_target(&servo) != SERVO_SLAT_CLOSED_ANGLE) {
+            servo_close(&servo, current_time);
+        }
+        if (!servo_at_target(&servo)) {
+            control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_CLOSE;
+            return;
+        }
+    }
+
+    control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
+}
+
+static void advance_control_sequence_locked(uint32_t current_time) {
+    switch (control_sequence) {
+        case CONTROL_SEQUENCE_WAIT_SERVO_OPEN:
+            if (servo_at_target(&servo)) {
+                control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
+            }
+            break;
+        case CONTROL_SEQUENCE_WAIT_SERVO_CLOSE:
+            if (servo_at_target(&servo)) {
+                control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
+            }
+            break;
+        case CONTROL_SEQUENCE_MOVE_OPEN:
+            if (!motor_is_running(&motor)) {
+                motor_set_opening(&motor, current_time);
+                system_state.motor_state = motor_get_state(&motor);
+                control_sequence = CONTROL_SEQUENCE_NONE;
+            }
+            break;
+        case CONTROL_SEQUENCE_MOVE_CLOSE:
+            if (!motor_is_running(&motor)) {
+                motor_set_closing(&motor, current_time);
+                system_state.motor_state = motor_get_state(&motor);
+                control_sequence = CONTROL_SEQUENCE_NONE;
+            }
+            break;
+        case CONTROL_SEQUENCE_NONE:
+        default:
+            break;
+    }
+}
+
+static void maybe_persist_runtime_state_locked(uint32_t current_time) {
+    if (!runtime_state.initialized) {
+        return;
+    }
+
+    uint8_t position_percent = 0U;
+    bool position_valid = get_position_snapshot_locked(&position_percent);
+    bool motor_running = motor_is_running(&motor);
+    bool should_save = runtime_save_pending;
+
+    if (position_valid) {
+        runtime_position_valid = true;
+        runtime_position_percent = position_percent;
+    }
+
+    if (!should_save && motor_running && position_valid) {
+        uint8_t delta = (position_percent > last_saved_position_percent)
+            ? static_cast<uint8_t>(position_percent - last_saved_position_percent)
+            : static_cast<uint8_t>(last_saved_position_percent - position_percent);
+
+        should_save =
+            (delta >= RUNTIME_POSITION_SAVE_DELTA) &&
+            ((current_time - last_runtime_save_time) >= RUNTIME_POSITION_SAVE_INTERVAL_MS);
+    }
+
+    if (!should_save) {
+        return;
+    }
+
+    RuntimeStateSnapshot_t snapshot = build_runtime_snapshot_locked();
+    if (runtime_state_save(&runtime_state, &snapshot)) {
+        runtime_save_pending = false;
+        last_runtime_save_time = current_time;
+        if (snapshot.position_valid) {
+            last_saved_position_percent = snapshot.position_percent;
+        }
+    }
+}
+
+static void restore_runtime_state(void) {
+    if (!runtime_state_init(&runtime_state)) {
+        ESP_LOGW(TAG, "Runtime state init failed");
+        return;
+    }
+
+    RuntimeStateSnapshot_t snapshot = {};
+    if (!runtime_state_load(&runtime_state, &snapshot)) {
+        ESP_LOGI(TAG, "No saved runtime state found");
+        return;
+    }
+
+    runtime_position_valid = snapshot.position_valid;
+    runtime_position_percent = snapshot.position_percent;
+    last_saved_position_percent = snapshot.position_percent;
+
+    if (snapshot.mode == MODE_MANUAL) {
+        mode_set_manual(&mode, 0U);
+    } else {
+        mode_return_to_auto(&mode, 0U);
+    }
+
+    if (system_health.servo_ok && snapshot.slat_angle_valid) {
+        servo_move_to(&servo, snapshot.slat_angle_deg, 0U);
+        servo_update(&servo, 0U);
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
+    system_state.light_level = snapshot.light_level;
+    ESP_LOGI(TAG, "Restored runtime state: mode=%s position_valid=%s position=%u%% slats=%u deg",
+             mode_to_string(system_state.current_mode),
+             snapshot.position_valid ? "yes" : "no",
+             snapshot.position_percent,
+             snapshot.slat_angle_deg);
 }
 
 /* ============================================================================
@@ -104,13 +333,14 @@ static void handle_manual_button_locked(uint32_t current_time) {
     MotorState_t current_motor_state = motor_get_state(&motor);
 
     if (current_motor_state == MOTOR_OPENING || current_motor_state == MOTOR_CLOSING) {
-        motor_stop(&motor, current_time);
+        clear_control_sequence_locked();
+        stop_motor_locked(current_time);
         manual_next_open = (current_motor_state == MOTOR_CLOSING);
     } else if (manual_next_open) {
-        motor_set_opening(&motor, current_time);
+        begin_open_sequence_locked(current_time);
         manual_next_open = false;
     } else {
-        motor_set_closing(&motor, current_time);
+        begin_close_sequence_locked(current_time);
         manual_next_open = true;
     }
 
@@ -138,15 +368,17 @@ static void task_button_handler(void *pvParameters) {
 
             if (action == BUTTON_ACTION_LONG) {
                 mode_handle_button(&mode, action, current_time);
+                clear_control_sequence_locked();
                 stop_motor_locked(current_time);
                 auto_command_pending = system_health.ldr_ok;
                 manual_next_open = true;
+                update_servo_for_light_locked(current_time);
             } else if (current_mode == MODE_AUTO) {
                 mode_handle_button(&mode, action, current_time);
+                clear_control_sequence_locked();
                 stop_motor_locked(current_time);
                 manual_next_open = true;
             } else {
-                mode_note_activity(&mode, current_time);
                 handle_manual_button_locked(current_time);
             }
 
@@ -178,9 +410,11 @@ static void task_mode_handler(void *pvParameters) {
             system_state.current_mode = current_mode;
 
             if (changed && current_mode == MODE_AUTO) {
+                clear_control_sequence_locked();
                 stop_motor_locked(current_time);
                 auto_command_pending = system_health.ldr_ok;
                 manual_next_open = true;
+                update_servo_for_light_locked(current_time);
             }
 
             unlock_state();
@@ -208,31 +442,38 @@ static void task_motor_handler(void *pvParameters) {
             OperatingMode_t current_mode = mode_get_current(&mode);
             MotorState_t motor_state     = motor_get_state(&motor);
 
-            if (current_mode == MODE_AUTO) {
-                if (motor_state != MOTOR_STOP) {
-                    bool timeout_reached  = (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
-                    bool endpoint_reached = false;
+            if (motor_state != MOTOR_STOP) {
+                bool timeout_reached  = (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
+                bool endpoint_reached = false;
 
-                    if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
-                        float position_percent = encoder_get_percent(&encoder);
-                        endpoint_reached =
-                            ((motor_state == MOTOR_OPENING) && (position_percent >= 99.0f)) ||
-                            ((motor_state == MOTOR_CLOSING) && (position_percent <= 1.0f));
-                    }
+                if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
+                    float position_percent = encoder_get_percent(&encoder);
+                    endpoint_reached =
+                        ((motor_state == MOTOR_OPENING) && (position_percent >= 99.0f)) ||
+                        ((motor_state == MOTOR_CLOSING) && (position_percent <= 1.0f));
+                }
 
-                    if (timeout_reached || endpoint_reached) {
-                        stop_motor_locked(current_time);
-                    }
-                } else if (auto_command_pending && system_health.ldr_ok) {
+                if (timeout_reached || endpoint_reached) {
+                    stop_motor_locked(current_time);
+                }
+            } else {
+                advance_control_sequence_locked(current_time);
+
+                if ((control_sequence == CONTROL_SEQUENCE_NONE) &&
+                    (current_mode == MODE_AUTO) &&
+                    (current_time >= auto_actions_enabled_after_ms) &&
+                    auto_command_pending &&
+                    system_health.ldr_ok) {
                     if (ldr_is_bright(&ldr)) {
-                        motor_set_opening(&motor, current_time);
+                        begin_open_sequence_locked(current_time);
                     } else if (ldr_is_dark(&ldr)) {
-                        motor_set_closing(&motor, current_time);
+                        begin_close_sequence_locked(current_time);
                     }
                     auto_command_pending = false;
                 }
             }
 
+            maybe_persist_runtime_state_locked(current_time);
             system_state.motor_state = motor_get_state(&motor);
             unlock_state();
         }
@@ -281,23 +522,43 @@ static void task_ldr_handler(void *pvParameters) {
         bool level_changed    = false;
         LightLevel_t light_level = LIGHT_DARK;
         uint16_t raw_level    = 0;
+        uint16_t filtered_level = 0;
 
         if (system_health.ldr_ok && lock_state()) {
+            OperatingMode_t current_mode = mode_get_current(&mode);
             ldr_update(&ldr, current_time);
             level_changed = ldr_level_changed(&ldr);
             light_level   = ldr_get_level(&ldr);
             raw_level     = ldr_get_raw(&ldr);
+            filtered_level = ldr_get_filtered(&ldr);
             system_state.light_level = light_level;
 
             if (level_changed) {
-                auto_command_pending = (mode_get_current(&mode) == MODE_AUTO);
+                if (ldr_is_dark(&ldr)) {
+                    if (current_mode == MODE_MANUAL) {
+                        ESP_LOGI(TAG, "Darkness overrides manual mode, returning to AUTO");
+                        mode_return_to_auto(&mode, current_time);
+                        system_state.current_mode = mode_get_current(&mode);
+                        request_runtime_save_locked();
+                    }
+                    auto_command_pending = true;
+                } else {
+                    auto_command_pending = (current_mode == MODE_AUTO);
+                }
+
+                update_servo_for_light_locked(current_time);
             }
 
             unlock_state();
         }
 
+        ESP_LOGI(TAG, "LDR raw: %u filtered: %u level: %s",
+                 raw_level,
+                 filtered_level,
+                 light_level_to_string(light_level));
+
         if (level_changed) {
-            ESP_LOGI(TAG, "Light level: %s (raw: %u)", light_level_to_string(light_level), raw_level);
+            ESP_LOGI(TAG, "Light level changed to: %s", light_level_to_string(light_level));
         }
 
         vTaskDelayUntil(&last_wake_time, period);
@@ -393,6 +654,7 @@ static bool initialize_all_controllers(void) {
     system_health.encoder_ok   = encoder_init(&encoder);
     system_health.servo_ok     = servo_init(&servo);
     system_health.microphone_ok = microphone_init(&microphone);
+    restore_runtime_state();
 
     system_state.current_mode  = mode_get_current(&mode);
     system_state.motor_state   = motor_get_state(&motor);
@@ -406,7 +668,7 @@ static bool initialize_all_controllers(void) {
         system_health.servo_ok  &&
         system_health.microphone_ok;
 
-    auto_command_pending = system_health.ldr_ok;
+    auto_command_pending = system_health.ldr_ok && (mode_get_current(&mode) == MODE_AUTO);
     manual_next_open     = true;
 
     ESP_LOGI(TAG, "Button:     %s", system_health.button_ok     ? "OK" : "FAILED");
@@ -457,6 +719,7 @@ extern "C" void app_main(void) {
     }
 
     initialize_network();
+    auto_actions_enabled_after_ms = AUTO_STARTUP_SETTLE_MS;
 
     uint32_t last_log_time     = 0;
     uint32_t last_publish_time = 0;
@@ -468,6 +731,7 @@ extern "C" void app_main(void) {
         if (lock_state()) {
             servo_update(&servo, current_time);
             system_state.uptime_ms = current_time;
+            maybe_persist_runtime_state_locked(current_time);
             snapshot = system_state;
             unlock_state();
         }

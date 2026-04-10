@@ -136,10 +136,10 @@ static void handle_cover_command(const char *payload, int len) {
     apply_manual_mode_locked(current_time);
 
     if ((len == 4) && (strncmp(payload, "OPEN", 4) == 0)) {
-        motor_set_opening(&motor, current_time);
+        begin_open_sequence_locked(current_time);
         manual_next_open = false;
     } else if ((len == 5) && (strncmp(payload, "CLOSE", 5) == 0)) {
-        motor_set_closing(&motor, current_time);
+        begin_close_sequence_locked(current_time);
         manual_next_open = true;
     } else if ((len == 4) && (strncmp(payload, "STOP", 4) == 0)) {
         stop_motor_locked(current_time);
@@ -177,10 +177,10 @@ static void handle_position_command(const char *payload, int len) {
 
     float current_position = system_health.encoder_ok ? encoder_get_percent(&encoder) : 0.0f;
     if (requested_position > (int)(current_position + 1.0f)) {
-        motor_set_opening(&motor, current_time);
+        begin_open_sequence_locked(current_time);
         manual_next_open = false;
     } else if (requested_position < (int)(current_position - 1.0f)) {
-        motor_set_closing(&motor, current_time);
+        begin_close_sequence_locked(current_time);
         manual_next_open = true;
     } else {
         stop_motor_locked(current_time);
@@ -196,8 +196,7 @@ static void handle_system_command(const char *payload, int len) {
         uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
         if (lock_state()) {
             apply_manual_mode_locked(current_time);
-            servo_close(&servo, current_time);
-            motor_set_closing(&motor, current_time);
+            begin_close_sequence_locked(current_time);
             manual_next_open = true;
             system_state.current_mode = mode_get_current(&mode);
             system_state.motor_state  = motor_get_state(&motor);
