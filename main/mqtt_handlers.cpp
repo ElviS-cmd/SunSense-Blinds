@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "gpio_config.h"
 #include "mqtt_client.h"
 #include "wifi_provisioning/manager.h"
 #include "mqtt_handlers.h"
@@ -34,6 +35,33 @@ static const char *slat_state_to_string(float angle) {
     return "moving";
 }
 
+static int slat_angle_to_percent(float angle) {
+    if (angle <= SERVO_SLAT_CLOSED_ANGLE) {
+        return 0;
+    }
+    if (angle >= SERVO_SLAT_OPEN_ANGLE) {
+        return 100;
+    }
+
+    float range = SERVO_SLAT_OPEN_ANGLE - SERVO_SLAT_CLOSED_ANGLE;
+    if (range <= 0.0f) {
+        return 0;
+    }
+    return (int)(((angle - SERVO_SLAT_CLOSED_ANGLE) * 100.0f / range) + 0.5f);
+}
+
+static float slat_percent_to_angle(long percent) {
+    if (percent <= 0) {
+        return SERVO_SLAT_CLOSED_ANGLE;
+    }
+    if (percent >= 100) {
+        return SERVO_SLAT_OPEN_ANGLE;
+    }
+
+    float range = SERVO_SLAT_OPEN_ANGLE - SERVO_SLAT_CLOSED_ANGLE;
+    return SERVO_SLAT_CLOSED_ANGLE + ((float)percent * range / 100.0f);
+}
+
 /* ============================================================================
  * MQTT PUBLISH HELPERS
  * ========================================================================== */
@@ -57,6 +85,146 @@ static void mqtt_publish_float(const char *topic, float value) {
     mqtt_publish_string(topic, buffer);
 }
 
+static void mqtt_publish_retained(const char *topic, const char *value) {
+    if (!mqtt_connected || mqtt_client == NULL) {
+        return;
+    }
+    esp_mqtt_client_publish(mqtt_client, topic, value, 0, 1, 1);
+}
+
+static void build_discovery_topic(char *buffer,
+                                  size_t buffer_size,
+                                  const char *component,
+                                  const char *object_id) {
+    snprintf(buffer, buffer_size, "homeassistant/%s/%s/%s/config",
+             component, network_config.device_id, object_id);
+}
+
+static int append_device_info(char *buffer, size_t buffer_size, int offset) {
+    return snprintf(buffer + offset, buffer_size - (size_t)offset,
+                    "\"device\":{\"identifiers\":[\"sunsense_%s\"],"
+                    "\"name\":\"SunSense Blinds %s\","
+                    "\"manufacturer\":\"SunSense\","
+                    "\"model\":\"ESP32-S3 Blinds Controller\"}",
+                    network_config.device_id, network_config.device_id);
+}
+
+static void publish_cover_discovery(void) {
+    char topic[128] = {};
+    char payload[1024] = {};
+
+    build_discovery_topic(topic, sizeof(topic), "cover", "cover");
+    int len = snprintf(payload, sizeof(payload),
+        "{\"name\":\"Blinds\","
+        "\"unique_id\":\"sunsense_%s_cover\","
+        "\"command_topic\":\"%s\","
+        "\"state_topic\":\"%s\","
+        "\"position_topic\":\"%s\","
+        "\"set_position_topic\":\"%s\","
+        "\"tilt_command_topic\":\"%s\","
+        "\"tilt_status_topic\":\"%s\","
+        "\"tilt_min\":0,"
+        "\"tilt_max\":100,"
+        "\"tilt_closed_value\":0,"
+        "\"tilt_opened_value\":100,"
+        "\"payload_open\":\"OPEN\","
+        "\"payload_close\":\"CLOSE\","
+        "\"payload_stop\":\"STOP\","
+        "\"state_open\":\"open\","
+        "\"state_closed\":\"closed\","
+        "\"state_opening\":\"opening\","
+        "\"state_closing\":\"closing\","
+        "\"state_stopped\":\"stopped\","
+        "\"position_open\":100,"
+        "\"position_closed\":0,"
+        "\"availability_topic\":\"%s\","
+        "\"payload_available\":\"online\","
+        "\"payload_not_available\":\"offline\",",
+        network_config.device_id,
+        topics.cmd_cover,
+        topics.state_cover,
+        topics.state_position,
+        topics.cmd_position,
+        topics.cmd_slat,
+        topics.state_slat_position,
+        topics.state_network_online);
+    len += append_device_info(payload, sizeof(payload), len);
+    snprintf(payload + len, sizeof(payload) - (size_t)len, "}");
+    mqtt_publish_retained(topic, payload);
+}
+
+static void publish_select_discovery(void) {
+    char topic[128] = {};
+    char payload[768] = {};
+
+    build_discovery_topic(topic, sizeof(topic), "select", "mode");
+    int len = snprintf(payload, sizeof(payload),
+        "{\"name\":\"Mode\","
+        "\"unique_id\":\"sunsense_%s_mode\","
+        "\"command_topic\":\"%s\","
+        "\"state_topic\":\"%s\","
+        "\"options\":[\"AUTO\",\"MANUAL\"],"
+        "\"availability_topic\":\"%s\","
+        "\"payload_available\":\"online\","
+        "\"payload_not_available\":\"offline\",",
+        network_config.device_id,
+        topics.cmd_mode,
+        topics.state_mode,
+        topics.state_network_online);
+    len += append_device_info(payload, sizeof(payload), len);
+    snprintf(payload + len, sizeof(payload) - (size_t)len, "}");
+    mqtt_publish_retained(topic, payload);
+}
+
+static void publish_sensor_discovery(const char *object_id,
+                                     const char *name,
+                                     const char *state_topic,
+                                     const char *unit,
+                                     const char *device_class) {
+    char topic[128] = {};
+    char payload[768] = {};
+
+    build_discovery_topic(topic, sizeof(topic), "sensor", object_id);
+    int len = snprintf(payload, sizeof(payload),
+        "{\"name\":\"%s\","
+        "\"unique_id\":\"sunsense_%s_%s\","
+        "\"state_topic\":\"%s\",",
+        name,
+        network_config.device_id,
+        object_id,
+        state_topic);
+    if (unit != NULL) {
+        len += snprintf(payload + len, sizeof(payload) - (size_t)len,
+                        "\"unit_of_measurement\":\"%s\",", unit);
+    }
+    if (device_class != NULL) {
+        len += snprintf(payload + len, sizeof(payload) - (size_t)len,
+                        "\"device_class\":\"%s\",", device_class);
+    }
+    len += snprintf(payload + len, sizeof(payload) - (size_t)len,
+                    "\"availability_topic\":\"%s\","
+                    "\"payload_available\":\"online\","
+                    "\"payload_not_available\":\"offline\",",
+                    topics.state_network_online);
+    len += append_device_info(payload, sizeof(payload), len);
+    snprintf(payload + len, sizeof(payload) - (size_t)len, "}");
+    mqtt_publish_retained(topic, payload);
+}
+
+static void publish_home_assistant_discovery(void) {
+    publish_cover_discovery();
+    publish_select_discovery();
+    publish_sensor_discovery("position", "Position", topics.state_position, "%", NULL);
+    publish_sensor_discovery("light_raw", "Light Raw", topics.state_light_raw, NULL, NULL);
+    publish_sensor_discovery("light_filtered", "Light Filtered", topics.state_light_filtered, NULL, NULL);
+    publish_sensor_discovery("light_state", "Light State", topics.state_light_state, NULL, NULL);
+    publish_sensor_discovery("motor", "Motor", topics.state_motor, NULL, NULL);
+    publish_sensor_discovery("slat", "Slat", topics.state_slat, NULL, NULL);
+    publish_sensor_discovery("slat_position", "Slat Position", topics.state_slat_position, "%", NULL);
+    publish_sensor_discovery("health", "Health", topics.state_health, NULL, NULL);
+    publish_sensor_discovery("rssi", "Wi-Fi RSSI", topics.state_network_rssi, "dBm", "signal_strength");
+}
+
 /* ============================================================================
  * STATE PUBLISHING
  * ========================================================================== */
@@ -73,8 +241,9 @@ static void publish_state_snapshot(const PublishSnapshot_t *snapshot) {
     mqtt_publish_string(topics.state_light_state,  light_level_to_string(snapshot->system.light_level));
     mqtt_publish_string(topics.state_motor,        motor_state_to_string(snapshot->system.motor_state));
     mqtt_publish_string(topics.state_slat,         slat_state_to_string(snapshot->servo_angle));
+    mqtt_publish_int   (topics.state_slat_position, slat_angle_to_percent(snapshot->servo_angle));
     mqtt_publish_string(topics.state_health,       snapshot->system.system_healthy ? "ok" : "fault");
-    mqtt_publish_string(topics.state_network_online, wifi_connected ? "true" : "false");
+    mqtt_publish_retained(topics.state_network_online, wifi_connected ? "online" : "offline");
     if (have_rssi) {
         mqtt_publish_int(topics.state_network_rssi, ap_info.rssi);
     }
@@ -191,6 +360,39 @@ static void handle_position_command(const char *payload, int len) {
     unlock_state();
 }
 
+static void handle_slat_command(const char *payload, int len) {
+    char buffer[8] = {};
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    if (!lock_state()) {
+        return;
+    }
+
+    apply_manual_mode_locked(current_time);
+
+    if ((len == 4) && (strncmp(payload, "OPEN", 4) == 0)) {
+        servo_open(&servo, current_time);
+    } else if ((len == 5) && (strncmp(payload, "CLOSE", 5) == 0)) {
+        servo_close(&servo, current_time);
+    } else if ((len == 4) && (strncmp(payload, "STOP", 4) == 0)) {
+        servo_move_to(&servo, servo_get_angle(&servo), current_time);
+    } else if (len > 0 && len < (int) sizeof(buffer)) {
+        memcpy(buffer, payload, len);
+        char *endptr = NULL;
+        long requested_percent = strtol(buffer, &endptr, 10);
+        if (endptr != buffer && requested_percent >= 0 && requested_percent <= 100) {
+            servo_move_to(&servo, slat_percent_to_angle(requested_percent), current_time);
+        } else {
+            ESP_LOGW(TAG, "Ignoring invalid slat command");
+        }
+    } else {
+        ESP_LOGW(TAG, "Ignoring invalid slat command");
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
+    unlock_state();
+}
+
 static void handle_system_command(const char *payload, int len) {
     if ((len == 7) && (strncmp(payload, "GO_HOME", 7) == 0)) {
         uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -222,6 +424,8 @@ static void handle_mqtt_data_event(const esp_mqtt_event_t *event) {
         handle_mode_command(event->data, event->data_len);
     } else if (topic_matches(topics.cmd_position, event->topic, event->topic_len)) {
         handle_position_command(event->data, event->data_len);
+    } else if (topic_matches(topics.cmd_slat, event->topic, event->topic_len)) {
+        handle_slat_command(event->data, event->data_len);
     } else if (topic_matches(topics.cmd_system,  event->topic, event->topic_len)) {
         handle_system_command(event->data, event->data_len);
     }
@@ -244,14 +448,22 @@ void mqtt_event_handler(void *handler_args,
     switch ((esp_mqtt_event_id_t) event_id) {
         case MQTT_EVENT_CONNECTED:
             mqtt_connected = true;
+            ESP_LOGI(TAG, "MQTT connected; publishing Home Assistant discovery");
+            mqtt_publish_retained(topics.state_network_online, "online");
+            publish_home_assistant_discovery();
             esp_mqtt_client_subscribe(mqtt_client, topics.cmd_cover,    1);
             esp_mqtt_client_subscribe(mqtt_client, topics.cmd_mode,     1);
             esp_mqtt_client_subscribe(mqtt_client, topics.cmd_position, 1);
+            esp_mqtt_client_subscribe(mqtt_client, topics.cmd_slat,     1);
             esp_mqtt_client_subscribe(mqtt_client, topics.cmd_system,   1);
             publish_state_if_ready();
             break;
         case MQTT_EVENT_DISCONNECTED:
             mqtt_connected = false;
+            ESP_LOGW(TAG, "MQTT disconnected");
+            break;
+        case MQTT_EVENT_ERROR:
+            ESP_LOGE(TAG, "MQTT connection error");
             break;
         case MQTT_EVENT_DATA:
             handle_mqtt_data_event(event);

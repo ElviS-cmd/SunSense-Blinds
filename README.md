@@ -94,6 +94,7 @@ Current command topics:
 - `sunsense/<device_id>/cmd/cover`
 - `sunsense/<device_id>/cmd/mode`
 - `sunsense/<device_id>/cmd/position`
+- `sunsense/<device_id>/cmd/slat`
 - `sunsense/<device_id>/cmd/system`
 
 Current state topics:
@@ -106,6 +107,7 @@ Current state topics:
 - `sunsense/<device_id>/state/light/state`
 - `sunsense/<device_id>/state/motor`
 - `sunsense/<device_id>/state/slat`
+- `sunsense/<device_id>/state/slat/position`
 - `sunsense/<device_id>/state/health`
 - `sunsense/<device_id>/state/network/rssi`
 - `sunsense/<device_id>/state/network/online`
@@ -114,17 +116,79 @@ Supported command payloads currently include:
 
 - cover: `OPEN`, `CLOSE`, `STOP`
 - mode: `AUTO`, `MANUAL`
+- position: `0` through `100`
+- slat: `OPEN`, `CLOSE`, `STOP`, or `0` through `100`
 - system: `GO_HOME`, `REPROVISION`
 
 ## Home Assistant Integration
 
-The firmware is designed to map cleanly into a Home Assistant MQTT setup with:
+The firmware publishes Home Assistant MQTT discovery messages after it connects to
+the configured broker. With Home Assistant MQTT discovery enabled, the device is
+created automatically with:
 
-- one main cover entity for the blinds
+- one main cover entity for the blinds, including slat tilt controls
 - one mode selector for `AUTO` and `MANUAL`
 - supporting light, motor, slat, health, and network sensors
 
-The Linux-side Home Assistant and Mosquitto setup used during development lives outside this repository. This repository contains the device-side firmware integration only.
+Slat tilt is exposed on the main Home Assistant cover entity. Home Assistant
+sends slat commands to `sunsense/<device_id>/cmd/slat`; `0` means closed and
+`100` means open. The servo maps that range onto the configured slat angles
+from `SERVO_SLAT_CLOSED_ANGLE` to `SERVO_SLAT_OPEN_ANGLE`.
+
+The discovery prefix is the Home Assistant default:
+
+```text
+homeassistant/...
+```
+
+The runtime device topics still use:
+
+```text
+sunsense/<device_id>/...
+```
+
+The online availability topic is retained at:
+
+```text
+sunsense/<device_id>/state/network/online
+```
+
+Availability payloads are retained as:
+
+```text
+online
+offline
+```
+
+### Home Assistant setup
+
+1. Install and start the Mosquitto broker add-on in Home Assistant.
+2. Add a Home Assistant MQTT user, for example `sunsense`.
+3. In Home Assistant, add the MQTT integration and enable discovery.
+4. Flash the firmware to the ESP32-S3.
+5. Watch the serial monitor for:
+
+```text
+Provision with BLE service name: SunSense-...
+Use setup code: ...
+```
+
+6. Provision the device over BLE from this repository:
+
+```bash
+source env.sh
+python tools/provision_sunsense.py \
+  --service-name SunSense-DEVICE_ID_FROM_SERIAL \
+  --pop SETUP_CODE_FROM_SERIAL \
+  --ssid "YOUR_WIFI_SSID" \
+  --passphrase "YOUR_WIFI_PASSWORD" \
+  --mqtt-uri mqtt://HOME_ASSISTANT_IP:1883 \
+  --mqtt-username sunsense \
+  --mqtt-password "YOUR_MQTT_PASSWORD"
+```
+
+After provisioning completes, the ESP32 restarts, connects to Wi-Fi and MQTT,
+publishes discovery, and appears in Home Assistant under the MQTT integration.
 
 ## Build Requirements
 

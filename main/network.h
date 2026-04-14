@@ -38,6 +38,7 @@ typedef struct {
     char cmd_cover[96];
     char cmd_mode[96];
     char cmd_position[96];
+    char cmd_slat[96];
     char cmd_system[96];
     char state_cover[96];
     char state_mode[96];
@@ -47,6 +48,7 @@ typedef struct {
     char state_light_state[96];
     char state_motor[96];
     char state_slat[96];
+    char state_slat_position[96];
     char state_health[96];
     char state_network_rssi[96];
     char state_network_online[96];

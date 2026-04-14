@@ -196,6 +196,7 @@ static void initialize_topics(void) {
     build_topic(topics.cmd_cover,            sizeof(topics.cmd_cover),            "cmd/cover");
     build_topic(topics.cmd_mode,             sizeof(topics.cmd_mode),             "cmd/mode");
     build_topic(topics.cmd_position,         sizeof(topics.cmd_position),         "cmd/position");
+    build_topic(topics.cmd_slat,             sizeof(topics.cmd_slat),             "cmd/slat");
     build_topic(topics.cmd_system,           sizeof(topics.cmd_system),           "cmd/system");
     build_topic(topics.state_cover,          sizeof(topics.state_cover),          "state/cover");
     build_topic(topics.state_mode,           sizeof(topics.state_mode),           "state/mode");
@@ -205,6 +206,7 @@ static void initialize_topics(void) {
     build_topic(topics.state_light_state,    sizeof(topics.state_light_state),    "state/light/state");
     build_topic(topics.state_motor,          sizeof(topics.state_motor),          "state/motor");
     build_topic(topics.state_slat,           sizeof(topics.state_slat),           "state/slat");
+    build_topic(topics.state_slat_position,  sizeof(topics.state_slat_position),  "state/slat/position");
     build_topic(topics.state_health,         sizeof(topics.state_health),         "state/health");
     build_topic(topics.state_network_rssi,   sizeof(topics.state_network_rssi),   "state/network/rssi");
     build_topic(topics.state_network_online, sizeof(topics.state_network_online), "state/network/online");
@@ -225,6 +227,10 @@ static esp_err_t initialize_mqtt_client(void) {
     esp_mqtt_client_config_t mqtt_config = {};
     mqtt_config.broker.address.uri  = network_config.mqtt_broker_uri;
     mqtt_config.credentials.client_id = network_config.device_id;
+    mqtt_config.session.last_will.topic = topics.state_network_online;
+    mqtt_config.session.last_will.msg = "offline";
+    mqtt_config.session.last_will.qos = 1;
+    mqtt_config.session.last_will.retain = 1;
     if (network_config.mqtt_username[0] != '\0') {
         mqtt_config.credentials.username = network_config.mqtt_username;
     }
