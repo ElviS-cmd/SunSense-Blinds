@@ -79,5 +79,7 @@ extern esp_mqtt_client_handle_t mqtt_client;
  * ========================================================================== */
 
 void      initialize_network(void);
+bool      network_is_provisioning_active(void);
+bool      network_is_reconnecting(void);
 esp_err_t save_nvs_string(const char *key, const char *value);
 esp_err_t clear_network_config_from_nvs(void);

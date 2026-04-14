@@ -41,6 +41,22 @@ static uint8_t wifi_retry_count    = 0;
 
 static constexpr uint8_t WIFI_MAX_RETRIES = 10;
 
+bool network_is_provisioning_active(void) {
+    return provisioning_active;
+}
+
+bool network_is_reconnecting(void) {
+    if (!network_provisioned || !network_ready) {
+        return false;
+    }
+
+    if (wifi_connected && !mqtt_connected) {
+        return true;
+    }
+
+    return !wifi_connected && (wifi_retry_count > 0U) && (wifi_retry_count < WIFI_MAX_RETRIES);
+}
+
 /* ============================================================================
  * NVS HELPERS
  * ========================================================================== */
@@ -342,6 +358,7 @@ static void network_event_handler(void *arg,
     if (event_base == WIFI_PROV_EVENT) {
         switch (event_id) {
             case WIFI_PROV_START:
+                request_led_status_event(LED_STATUS_PAIRING);
                 ESP_LOGI(TAG, "BLE provisioning started");
                 break;
             case WIFI_PROV_CRED_RECV: {
@@ -353,11 +370,13 @@ static void network_event_handler(void *arg,
                 ESP_LOGI(TAG, "Provisioning successful");
                 break;
             case WIFI_PROV_CRED_FAIL:
+                request_led_status_event(LED_STATUS_FAULT);
                 ESP_LOGE(TAG, "Provisioning failed: bad Wi-Fi credentials, resetting for retry");
                 wifi_prov_mgr_reset_sm_state_on_failure();
                 break;
             case WIFI_PROV_END:
                 provisioning_active = false;
+                request_led_status_event(LED_STATUS_RECONNECTING);
                 wifi_prov_mgr_deinit();
                 ESP_LOGI(TAG, "Provisioning finished, restarting into normal runtime");
                 esp_restart();
@@ -379,21 +398,25 @@ static void network_event_handler(void *arg,
         }
     } else if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_START)) {
         wifi_retry_count = 0;
+        request_led_status_event(LED_STATUS_RECONNECTING);
         esp_wifi_connect();
     } else if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_DISCONNECTED)) {
         wifi_connected = false;
         mqtt_connected = false;
         if (wifi_retry_count < WIFI_MAX_RETRIES) {
             wifi_retry_count++;
+            request_led_status_event(LED_STATUS_RECONNECTING);
             vTaskDelay(pdMS_TO_TICKS(1000 * wifi_retry_count));
             ESP_LOGW(TAG, "Wi-Fi disconnected, retry %u/%u", wifi_retry_count, WIFI_MAX_RETRIES);
             esp_wifi_connect();
         } else {
+            request_led_status_event(LED_STATUS_OFFLINE);
             ESP_LOGE(TAG, "Wi-Fi failed after %u retries, giving up", WIFI_MAX_RETRIES);
         }
     } else if ((event_base == IP_EVENT) && (event_id == IP_EVENT_STA_GOT_IP)) {
         wifi_retry_count = 0;
         wifi_connected = true;
+        request_led_status_event(LED_STATUS_RECONNECTING);
         if (mqtt_client == NULL && network_config.mqtt_broker_uri[0] != '\0') {
             ESP_ERROR_CHECK_WITHOUT_ABORT(initialize_mqtt_client());
         }
@@ -457,6 +480,7 @@ void initialize_network(void) {
         snprintf(service_name, sizeof(service_name), "SunSense-%.20s", network_config.device_id);
 
         provisioning_active = true;
+        request_led_status_event(LED_STATUS_PAIRING);
         wifi_prov_mgr_endpoint_create(MQTT_CONFIG_ENDPOINT);
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(
             WIFI_PROV_SECURITY_1,

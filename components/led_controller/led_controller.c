@@ -26,8 +26,10 @@ bool led_init(LEDController_t *led) {
     memset(led, 0, sizeof(LEDController_t));
     led->green_state = LED_OFF;
     led->blue_state = LED_OFF;
+    led->status_pattern = LED_STATUS_OFFLINE;
     led->green_is_on = false;
     led->blue_is_on = false;
+    led->pattern_phase_on = false;
     
     /* Configure GPIO5 (Green LED) as output */
     gpio_config_t io_conf_green = {
@@ -64,6 +66,13 @@ bool led_init(LEDController_t *led) {
  * LED CONTROL
  * ========================================================================== */
 
+static void led_apply_outputs(LEDController_t *led, bool green_on, bool blue_on) {
+    gpio_set_level(GPIO_LED_GREEN, green_on ? 1 : 0);
+    gpio_set_level(GPIO_LED_BLUE, blue_on ? 1 : 0);
+    led->green_is_on = green_on;
+    led->blue_is_on = blue_on;
+}
+
 void led_set_green(LEDController_t *led, LEDState_t state) {
     led->green_state = state;
     
@@ -90,11 +99,87 @@ void led_set_blue(LEDController_t *led, LEDState_t state) {
     /* Blinking states are handled in led_update() */
 }
 
+void led_set_status_pattern(LEDController_t *led, LEDStatusPattern_t pattern, uint32_t current_time) {
+    if (led->status_pattern == pattern) {
+        return;
+    }
+
+    led->status_pattern = pattern;
+    led->pattern_last_toggle_time = current_time;
+    led->green_last_toggle_time = current_time;
+    led->blue_last_toggle_time = current_time;
+    led->pattern_phase_on = true;
+
+    switch (pattern) {
+        case LED_STATUS_NORMAL:
+            led->green_state = LED_ON;
+            led->blue_state = LED_ON;
+            led_apply_outputs(led, true, true);
+            break;
+        case LED_STATUS_OFFLINE:
+            led->green_state = LED_OFF;
+            led->blue_state = LED_OFF;
+            led_apply_outputs(led, false, false);
+            break;
+        case LED_STATUS_OPENING:
+            led->green_state = LED_BLINK_SLOW;
+            led->blue_state = LED_OFF;
+            led_apply_outputs(led, true, false);
+            break;
+        case LED_STATUS_CLOSING:
+            led->green_state = LED_OFF;
+            led->blue_state = LED_BLINK_SLOW;
+            led_apply_outputs(led, false, true);
+            break;
+        case LED_STATUS_PAIRING:
+            led->green_state = LED_BLINK_SLOW;
+            led->blue_state = LED_BLINK_SLOW;
+            led_apply_outputs(led, true, true);
+            break;
+        case LED_STATUS_CALIBRATING:
+            led->green_state = LED_BLINK_FAST;
+            led->blue_state = LED_BLINK_FAST;
+            led_apply_outputs(led, true, true);
+            break;
+        case LED_STATUS_RECONNECTING:
+            led->green_state = LED_BLINK_SLOW;
+            led->blue_state = LED_BLINK_SLOW;
+            led_apply_outputs(led, true, false);
+            break;
+        case LED_STATUS_FAULT:
+        default:
+            led->green_state = LED_BLINK_FAST;
+            led->blue_state = LED_BLINK_FAST;
+            led_apply_outputs(led, true, false);
+            break;
+    }
+}
+
 /* ============================================================================
  * PERIODIC UPDATE (handles blinking/pulsing)
  * ========================================================================== */
 
 void led_update(LEDController_t *led, uint32_t current_time) {
+    if (led->status_pattern == LED_STATUS_PAIRING || led->status_pattern == LED_STATUS_CALIBRATING) {
+        uint32_t period = (led->status_pattern == LED_STATUS_PAIRING) ? BLINK_SLOW_PERIOD_MS : BLINK_FAST_PERIOD_MS;
+        if ((current_time - led->pattern_last_toggle_time) >= period) {
+            led->pattern_phase_on = !led->pattern_phase_on;
+            led_apply_outputs(led, led->pattern_phase_on, led->pattern_phase_on);
+            led->pattern_last_toggle_time = current_time;
+        }
+        return;
+    }
+
+    if (led->status_pattern == LED_STATUS_RECONNECTING || led->status_pattern == LED_STATUS_FAULT) {
+        uint32_t period = (led->status_pattern == LED_STATUS_RECONNECTING) ? BLINK_SLOW_PERIOD_MS : BLINK_FAST_PERIOD_MS;
+        if ((current_time - led->pattern_last_toggle_time) >= period) {
+            led->pattern_phase_on = !led->pattern_phase_on;
+            led_apply_outputs(led, led->pattern_phase_on, !led->pattern_phase_on);
+            led->pattern_last_toggle_time = current_time;
+        }
+        return;
+    }
+
     /* Update green LED */
     if (led->green_state == LED_BLINK_SLOW) {
         if ((current_time - led->green_last_toggle_time) >= BLINK_SLOW_PERIOD_MS) {

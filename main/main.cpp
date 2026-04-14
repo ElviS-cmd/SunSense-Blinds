@@ -18,6 +18,7 @@ extern "C" {
     #include "led_controller.h"
     #include "microphone_controller.h"
     #include "runtime_state.h"
+    #include "voice_command_controller.h"
 }
 
 static const char *TAG = "SunSense";
@@ -34,6 +35,7 @@ LDRController_t      ldr       = {};
 EncoderController_t  encoder   = {};
 ServoController_t    servo     = {};
 MicrophoneController_t microphone = {};
+VoiceCommandController_t voice = {};
 
 /* ============================================================================
  * SYSTEM STATE (extern-visible via mqtt_handlers.h)
@@ -47,8 +49,8 @@ bool           manual_next_open     = true;
 
 typedef enum {
     CONTROL_SEQUENCE_NONE = 0,
-    CONTROL_SEQUENCE_WAIT_SERVO_OPEN,
-    CONTROL_SEQUENCE_WAIT_SERVO_CLOSE,
+    CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN,
+    CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE,
     CONTROL_SEQUENCE_MOVE_OPEN,
     CONTROL_SEQUENCE_MOVE_CLOSE,
 } ControlSequenceState_t;
@@ -73,6 +75,7 @@ static uint8_t                  last_saved_position_percent = 0U;
 static bool                     runtime_save_pending = false;
 static uint32_t                 last_runtime_save_time = 0U;
 static uint32_t                 auto_actions_enabled_after_ms = 0U;
+static volatile LEDStatusPattern_t led_requested_pattern = LED_STATUS_OFFLINE;
 
 /* ============================================================================
  * STATE MUTEX HELPERS
@@ -137,15 +140,11 @@ static void update_servo_for_light_locked(uint32_t current_time) {
     }
 
     if (ldr_is_bright(&ldr)) {
-        if (servo_get_target(&servo) != SERVO_SLAT_OPEN_ANGLE) {
-            servo_open(&servo, current_time);
-            request_runtime_save_locked();
-        }
+        servo_open(&servo, current_time);
+        request_runtime_save_locked();
     } else if (ldr_is_dark(&ldr)) {
-        if (servo_get_target(&servo) != SERVO_SLAT_CLOSED_ANGLE) {
-            servo_close(&servo, current_time);
-            request_runtime_save_locked();
-        }
+        servo_close(&servo, current_time);
+        request_runtime_save_locked();
     }
 }
 
@@ -155,6 +154,36 @@ bool lock_state(void) {
 
 void unlock_state(void) {
     xSemaphoreGive(state_mutex);
+}
+
+static bool led_pattern_is_motion(LEDStatusPattern_t pattern) {
+    return (pattern == LED_STATUS_OPENING) || (pattern == LED_STATUS_CLOSING);
+}
+
+static bool led_pattern_is_network(LEDStatusPattern_t pattern) {
+    return (pattern == LED_STATUS_NORMAL) ||
+           (pattern == LED_STATUS_OFFLINE) ||
+           (pattern == LED_STATUS_RECONNECTING);
+}
+
+void request_led_status_event(LEDStatusPattern_t pattern) {
+    if (led_pattern_is_motion(led_requested_pattern) && led_pattern_is_network(pattern)) {
+        return;
+    }
+
+    led_requested_pattern = pattern;
+}
+
+void request_led_network_status_event(void) {
+    if (network_is_provisioning_active()) {
+        request_led_status_event(LED_STATUS_PAIRING);
+    } else if (network_is_reconnecting()) {
+        request_led_status_event(LED_STATUS_RECONNECTING);
+    } else if (wifi_connected && mqtt_connected) {
+        request_led_status_event(LED_STATUS_NORMAL);
+    } else {
+        request_led_status_event(LED_STATUS_OFFLINE);
+    }
 }
 
 /* ============================================================================
@@ -187,18 +216,15 @@ void stop_motor_locked(uint32_t current_time) {
         motor_stop(&motor, current_time);
         system_state.motor_state = motor_get_state(&motor);
         request_runtime_save_locked();
+        request_led_network_status_event();
     }
 }
 
 void begin_open_sequence_locked(uint32_t current_time) {
     if (system_health.servo_ok) {
-        if (servo_get_target(&servo) != SERVO_SLAT_OPEN_ANGLE) {
-            servo_open(&servo, current_time);
-        }
-        if (!servo_at_target(&servo)) {
-            control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_OPEN;
-            return;
-        }
+        servo_open(&servo, current_time);
+        control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN;
+        return;
     }
 
     control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
@@ -206,13 +232,9 @@ void begin_open_sequence_locked(uint32_t current_time) {
 
 void begin_close_sequence_locked(uint32_t current_time) {
     if (system_health.servo_ok) {
-        if (servo_get_target(&servo) != SERVO_SLAT_CLOSED_ANGLE) {
-            servo_close(&servo, current_time);
-        }
-        if (!servo_at_target(&servo)) {
-            control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_CLOSE;
-            return;
-        }
+        servo_close(&servo, current_time);
+        control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE;
+        return;
     }
 
     control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
@@ -220,12 +242,14 @@ void begin_close_sequence_locked(uint32_t current_time) {
 
 static void advance_control_sequence_locked(uint32_t current_time) {
     switch (control_sequence) {
-        case CONTROL_SEQUENCE_WAIT_SERVO_OPEN:
+        case CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN:
+            servo_update(&servo, current_time);
             if (servo_at_target(&servo)) {
                 control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
             }
             break;
-        case CONTROL_SEQUENCE_WAIT_SERVO_CLOSE:
+        case CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE:
+            servo_update(&servo, current_time);
             if (servo_at_target(&servo)) {
                 control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
             }
@@ -234,6 +258,7 @@ static void advance_control_sequence_locked(uint32_t current_time) {
             if (!motor_is_running(&motor)) {
                 motor_set_opening(&motor, current_time);
                 system_state.motor_state = motor_get_state(&motor);
+                request_led_status_event(LED_STATUS_OPENING);
                 control_sequence = CONTROL_SEQUENCE_NONE;
             }
             break;
@@ -241,6 +266,7 @@ static void advance_control_sequence_locked(uint32_t current_time) {
             if (!motor_is_running(&motor)) {
                 motor_set_closing(&motor, current_time);
                 system_state.motor_state = motor_get_state(&motor);
+                request_led_status_event(LED_STATUS_CLOSING);
                 control_sequence = CONTROL_SEQUENCE_NONE;
             }
             break;
@@ -344,6 +370,40 @@ static void handle_manual_button_locked(uint32_t current_time) {
         manual_next_open = true;
     }
 
+    system_state.motor_state = motor_get_state(&motor);
+}
+
+static void apply_voice_command_locked(SystemCommand_t command, uint32_t current_time) {
+    switch (command) {
+        case COMMAND_OPEN:
+            apply_manual_mode_locked(current_time);
+            begin_open_sequence_locked(current_time);
+            manual_next_open = false;
+            break;
+        case COMMAND_CLOSE:
+            apply_manual_mode_locked(current_time);
+            begin_close_sequence_locked(current_time);
+            manual_next_open = true;
+            break;
+        case COMMAND_STOP:
+            clear_control_sequence_locked();
+            stop_motor_locked(current_time);
+            manual_next_open = true;
+            break;
+        case COMMAND_RETURN_TO_AUTO:
+            mode_return_to_auto(&mode, current_time);
+            clear_control_sequence_locked();
+            stop_motor_locked(current_time);
+            auto_command_pending = system_health.ldr_ok;
+            manual_next_open = true;
+            update_servo_for_light_locked(current_time);
+            request_runtime_save_locked();
+            break;
+        default:
+            return;
+    }
+
+    system_state.current_mode = mode_get_current(&mode);
     system_state.motor_state = motor_get_state(&motor);
 }
 
@@ -455,6 +515,9 @@ static void task_motor_handler(void *pvParameters) {
 
                 if (timeout_reached || endpoint_reached) {
                     stop_motor_locked(current_time);
+                    if (timeout_reached) {
+                        request_led_status_event(LED_STATUS_FAULT);
+                    }
                 }
             } else {
                 advance_control_sequence_locked(current_time);
@@ -492,18 +555,19 @@ static void task_led_handler(void *pvParameters) {
     while (1) {
         uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
         bool healthy          = false;
-        OperatingMode_t current_mode = MODE_AUTO;
 
         if (lock_state()) {
             healthy      = system_state.system_healthy;
-            current_mode = system_state.current_mode;
             unlock_state();
         }
 
         if (system_health.led_ok) {
+            LEDStatusPattern_t pattern = healthy
+                ? led_requested_pattern
+                : LED_STATUS_FAULT;
+
+            led_set_status_pattern(&led, pattern, current_time);
             led_update(&led, current_time);
-            led_set_green(&led, healthy ? LED_BLINK_SLOW : LED_BLINK_FAST);
-            led_set_blue(&led, (current_mode == MODE_AUTO) ? LED_ON : LED_BLINK_SLOW);
         }
 
         vTaskDelayUntil(&last_wake_time, period);
@@ -596,6 +660,7 @@ static void task_encoder_handler(void *pvParameters) {
 static void task_microphone_handler(void *pvParameters) {
     (void) pvParameters;
     ESP_LOGI(TAG, "Microphone task started");
+    ESP_LOGI(TAG, "Voice commands: 1 utterance=open, 2=close, 3=stop, 4=auto");
 
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t period   = pdMS_TO_TICKS(TASK_PERIOD_MICROPHONE);
@@ -609,6 +674,14 @@ static void task_microphone_handler(void *pvParameters) {
 
             if (microphone_is_buffer_ready(&microphone)) {
                 uint16_t level = microphone_get_level(&microphone);
+                SystemCommand_t voice_command = COMMAND_NONE;
+
+                if (system_config.enable_voice_commands) {
+                    voice_command = voice_command_update(&voice,
+                                                         level,
+                                                         system_config.audio_threshold,
+                                                         current_time);
+                }
 
                 if (current_time - last_log > 2000U) {
                     ESP_LOGI(TAG, "Audio level: %u", level);
@@ -616,6 +689,14 @@ static void task_microphone_handler(void *pvParameters) {
                 }
 
                 microphone_clear_buffer(&microphone);
+
+                if (voice_command != COMMAND_NONE) {
+                    ESP_LOGI(TAG, "Applying voice command: %s", voice_command_to_string(voice_command));
+                    if (lock_state()) {
+                        apply_voice_command_locked(voice_command, current_time);
+                        unlock_state();
+                    }
+                }
             }
         }
 
@@ -654,6 +735,7 @@ static bool initialize_all_controllers(void) {
     system_health.encoder_ok   = encoder_init(&encoder);
     system_health.servo_ok     = servo_init(&servo);
     system_health.microphone_ok = microphone_init(&microphone);
+    voice_command_init(&voice);
     restore_runtime_state();
 
     system_state.current_mode  = mode_get_current(&mode);
@@ -695,12 +777,58 @@ static bool create_all_tasks(void) {
         create_task_checked(task_microphone_handler, "microphone_task", TASK_STACK_MICROPHONE, TASK_PRIORITY_MICROPHONE, &task_microphone, 1);
 }
 
+#if SUNSENSE_SERVO_TEST_ONLY
+static void run_servo_only_test(void) {
+    ESP_LOGW(TAG, "SUNSENSE_SERVO_TEST_ONLY=1; starting isolated servo test");
+    ESP_LOGW(TAG, "LDR, motor, encoder, MQTT, Wi-Fi, mode, button, LEDs, and microphone are bypassed");
+
+    ServoController_t test_servo = {};
+    if (!servo_init(&test_servo)) {
+        ESP_LOGE(TAG, "Servo-only test failed: servo_init() failed");
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+
+    const float test_angles[] = {0.0f, 90.0f, 180.0f, 90.0f};
+    const size_t test_angle_count = sizeof(test_angles) / sizeof(test_angles[0]);
+    size_t index = 0U;
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        float angle = test_angles[index];
+
+        ESP_LOGI(TAG, "Servo-only test command angle=%.1f expected_duty=%lu",
+                 angle,
+                 (unsigned long)servo_angle_to_duty(angle));
+        servo_move_to(&test_servo, angle, current_time);
+
+        vTaskDelay(pdMS_TO_TICKS(SERVO_TEST_HOLD_MS));
+        current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        servo_update(&test_servo, current_time);
+
+        ESP_LOGI(TAG, "Servo-only test settled current=%.1f target=%.1f duty=%lu state=%s",
+                 servo_get_angle(&test_servo),
+                 servo_get_target(&test_servo),
+                 (unsigned long)servo_get_duty(&test_servo),
+                 servo_is_moving(&test_servo) ? "moving" : "idle");
+
+        index = (index + 1U) % test_angle_count;
+    }
+}
+#endif
+
 /* ============================================================================
  * APP MAIN
  * ========================================================================== */
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Starting SunSense V2");
+
+#if SUNSENSE_SERVO_TEST_ONLY
+    run_servo_only_test();
+    return;
+#endif
 
     state_mutex = xSemaphoreCreateMutex();
     if (state_mutex == NULL) {

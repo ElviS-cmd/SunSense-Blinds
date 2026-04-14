@@ -449,6 +449,7 @@ void mqtt_event_handler(void *handler_args,
         case MQTT_EVENT_CONNECTED:
             mqtt_connected = true;
             ESP_LOGI(TAG, "MQTT connected; publishing Home Assistant discovery");
+            request_led_status_event(LED_STATUS_NORMAL);
             mqtt_publish_retained(topics.state_network_online, "online");
             publish_home_assistant_discovery();
             esp_mqtt_client_subscribe(mqtt_client, topics.cmd_cover,    1);
@@ -461,9 +462,11 @@ void mqtt_event_handler(void *handler_args,
         case MQTT_EVENT_DISCONNECTED:
             mqtt_connected = false;
             ESP_LOGW(TAG, "MQTT disconnected");
+            request_led_status_event(LED_STATUS_RECONNECTING);
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGE(TAG, "MQTT connection error");
+            request_led_status_event(LED_STATUS_RECONNECTING);
             break;
         case MQTT_EVENT_DATA:
             handle_mqtt_data_event(event);

@@ -36,6 +36,12 @@ On first boot or after reprovisioning, the device starts BLE provisioning. After
 - `components/` modular controllers for each hardware subsystem
 - `include/` shared project headers and GPIO configuration
 
+Notable controller components:
+
+- `led_controller`: two-LED product status patterns
+- `servo_controller`: deterministic MG996R positional servo PWM control
+- `voice_command_controller`: local utterance-count voice command prototype
+
 ## Hardware Pin Map
 
 From `include/gpio_config.h`:
@@ -63,6 +69,98 @@ From `include/gpio_config.h`:
 - Servo motor
 - DC motor with driver module
 - INMP441 microphone module
+
+## LED Status Patterns
+
+The two LEDs communicate product state:
+
+| Pattern | Meaning |
+|---|---|
+| Both solid on | Normal, connected, and ready |
+| Both off | Not connected or offline |
+| Green slow blink | Opening blinds |
+| Blue slow blink | Closing blinds |
+| Both slow blink together | Pairing or setup mode |
+| Both fast blink together | Calibration pattern available |
+| Alternating slow blink | Reconnecting or searching for controller |
+| Alternating fast blink | Fault, jam, obstruction, or motor/system error |
+
+LED patterns are event-driven from network, MQTT, motor, and fault transitions. Network status updates do not overwrite an active opening or closing indication while the motor is moving.
+
+## Servo Control
+
+The slat servo is treated as a standard MG996R positional servo.
+
+Servo PWM settings are defined in `include/gpio_config.h`:
+
+- GPIO: `GPIO 10`
+- Frequency: `50 Hz`
+- Resolution: `LEDC_TIMER_12_BIT`
+- Pulse range: `1000 us` to `2000 us`
+- Closed slat angle: `0 degrees`
+- Open slat angle: `90 degrees`
+
+The servo controller applies PWM deterministically and tracks commanded state only. It does not estimate physical intermediate position because the MG996R provides no position feedback. After each command, the controller waits for a conservative software settle time before allowing dependent sequencing, such as starting the roll motor.
+
+Repeated servo commands are intentional:
+
+- `servo_move_to()` reapplies PWM even if the target is unchanged.
+- `servo_move_to_ex(..., force_reapply=false)` can skip unchanged targets explicitly.
+
+Useful servo debug logs include commanded angle, computed duty, command count, skipped-command reason, and settled state.
+
+## Servo-Only Test Mode
+
+A compile-time servo-only test path is available for validating ESP-IDF LEDC output before running the full system.
+
+In `include/gpio_config.h`, set:
+
+```c
+#define SUNSENSE_SERVO_TEST_ONLY 1
+```
+
+Then build and flash normally:
+
+```bash
+idf.py build
+idf.py flash monitor
+```
+
+This bypasses LDR, motor, encoder, MQTT, Wi-Fi, mode switching, button handling, LEDs, and microphone processing. It repeatedly commands the servo through:
+
+```text
+0 -> 90 -> 180 -> 90
+```
+
+After testing, restore:
+
+```c
+#define SUNSENSE_SERVO_TEST_ONLY 0
+```
+
+## Voice Commands
+
+The current local voice command implementation is a first-pass utterance detector, not semantic speech recognition. The INMP441 microphone captures audio level data, and `voice_command_controller` converts loud utterance bursts into commands.
+
+Current mapping:
+
+| Utterances above threshold | Command |
+|---|---|
+| 1 | Open |
+| 2 | Close |
+| 3 | Stop |
+| 4 | Return to AUTO |
+
+Voice commands use the same locked control path as button and MQTT commands:
+
+- Open enters manual mode and starts the open sequence.
+- Close enters manual mode and starts the close sequence.
+- Stop clears pending motion and stops the motor.
+- Return to AUTO restores automatic mode and applies light-driven servo behavior.
+
+The default RMS threshold comes from `system_config.audio_threshold`. Timing constants for utterance duration, quiet gap, command window, and cooldown are defined in `include/gpio_config.h`.
+
+For true spoken phrases like "open blinds" or "close blinds", a real keyword or speech recognition engine should replace the current utterance-count recognizer.
 
 ## Provisioning
 
@@ -230,8 +328,17 @@ The current firmware builds successfully with `idf.py build` and currently inclu
 - controller initialization for the main SunSense hardware stack
 - AUTO and MANUAL mode handling
 - encoder-based position reporting
+- deterministic MG996R servo control with isolated servo-only test mode
+- event-driven two-LED status patterns
+- first-pass local utterance-count voice commands
 - BLE provisioning bootstrap
 - MQTT runtime connectivity
 - Home Assistant-oriented MQTT topic structure
 
-The next integration step is end-to-end hardware validation of the BLE provisioning flow and the client-side path that writes the `mqtt-config` endpoint during onboarding.
+The next integration step is layered hardware validation:
+
+1. Run `SUNSENSE_SERVO_TEST_ONLY=1` and confirm ESP-IDF servo motion.
+2. Restore normal firmware and validate button/MQTT open and close sequences.
+3. Tune microphone threshold using serial audio-level logs.
+4. Validate utterance-count voice commands in a quiet room.
+5. Run end-to-end BLE provisioning and MQTT onboarding.

@@ -83,6 +83,26 @@
 #define SERVO_DUTY_MID          ((SERVO_PWM_MID_US * 4095) / 20000)
 #define SERVO_DUTY_MAX          ((SERVO_PWM_MAX_US * 4095) / 20000)
 
+/* Set to 1 to compile a servo-only ESP-IDF test app path in main.cpp. */
+#define SUNSENSE_SERVO_TEST_ONLY 0
+#define SERVO_TEST_HOLD_MS       2000
+
+/* ============================================================================
+ * VOICE COMMAND RECOGNITION
+ * ========================================================================== */
+
+/*
+ * First-pass local voice command mode uses utterance bursts above RMS threshold:
+ * 1 utterance = open, 2 = close, 3 = stop, 4 = return to auto.
+ */
+#define VOICE_UTTERANCE_MIN_MS        120
+#define VOICE_UTTERANCE_MAX_MS        1200
+#define VOICE_QUIET_GAP_MS            250
+#define VOICE_COMMAND_FINAL_QUIET_MS  800
+#define VOICE_COMMAND_WINDOW_MS       3500
+#define VOICE_COMMAND_COOLDOWN_MS     2500
+#define VOICE_MAX_UTTERANCES          4
+
 /* ============================================================================
  * MOTOR CONTROL (L298N Motor Driver)
  * ========================================================================== */
@@ -129,7 +149,7 @@
 #define TASK_PERIOD_BUTTON      50
 #define TASK_PERIOD_MODE        100
 #define TASK_PERIOD_MOTOR       100
-#define TASK_PERIOD_LED         500
+#define TASK_PERIOD_LED         100
 #define TASK_PERIOD_LDR         1000
 #define TASK_PERIOD_ENCODER     100
 #define TASK_PERIOD_MICROPHONE  20

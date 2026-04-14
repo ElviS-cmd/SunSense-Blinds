@@ -20,6 +20,7 @@ idf_component_register(
         encoder_controller
         servo_controller
         microphone_controller
+        voice_command_controller
         runtime_state
         sunsense_types
 )

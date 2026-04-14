@@ -25,6 +25,17 @@ typedef enum {
     LED_BLUE = 1    // GPIO6 - mode indicator
 } LEDColor_t;
 
+typedef enum {
+    LED_STATUS_NORMAL = 0,       // Both solid on: connected and ready
+    LED_STATUS_OFFLINE,          // Both off: not connected/offline
+    LED_STATUS_OPENING,          // Green slow blink: opening blinds
+    LED_STATUS_CLOSING,          // Blue slow blink: closing blinds
+    LED_STATUS_PAIRING,          // Both slow blink together: provisioning/setup
+    LED_STATUS_CALIBRATING,      // Both fast blink together: calibration
+    LED_STATUS_RECONNECTING,     // Slow alternating blink: reconnecting/searching
+    LED_STATUS_FAULT             // Fast alternating blink: jam/obstruction/fault
+} LEDStatusPattern_t;
+
 /* ============================================================================
  * LED CONTROLLER STRUCT
  * ========================================================================== */
@@ -32,10 +43,13 @@ typedef enum {
 typedef struct {
     LEDState_t green_state;         // Green LED state
     LEDState_t blue_state;          // Blue LED state
+    LEDStatusPattern_t status_pattern;
     uint32_t green_last_toggle_time;
     uint32_t blue_last_toggle_time;
+    uint32_t pattern_last_toggle_time;
     bool green_is_on;               // Current green LED output state
     bool blue_is_on;                // Current blue LED output state
+    bool pattern_phase_on;
 } LEDController_t;
 
 /* ============================================================================
@@ -62,6 +76,14 @@ void led_set_green(LEDController_t *led, LEDState_t state);
  * @param state LED state (OFF, ON, BLINK_SLOW, BLINK_FAST, PULSE)
  */
 void led_set_blue(LEDController_t *led, LEDState_t state);
+
+/**
+ * @brief Set the product-level two-LED status pattern
+ * @param led Pointer to LEDController_t structure
+ * @param pattern Status pattern to display
+ * @param current_time Current time in milliseconds
+ */
+void led_set_status_pattern(LEDController_t *led, LEDStatusPattern_t pattern, uint32_t current_time);
 
 /**
  * @brief Update LED blink/pulse patterns (call periodically)

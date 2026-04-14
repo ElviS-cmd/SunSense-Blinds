@@ -14,6 +14,7 @@ extern "C" {
     #include "mode_controller.h"
     #include "ldr_controller.h"
     #include "encoder_controller.h"
+    #include "led_controller.h"
 }
 
 /* ============================================================================
@@ -62,6 +63,8 @@ void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot);
 void stop_motor_locked(uint32_t current_time);
 void begin_open_sequence_locked(uint32_t current_time);
 void begin_close_sequence_locked(uint32_t current_time);
+void request_led_status_event(LEDStatusPattern_t pattern);
+void request_led_network_status_event(void);
 
 /* ============================================================================
  * FUNCTIONS DEFINED IN mqtt_handlers.cpp
