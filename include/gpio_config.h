@@ -76,8 +76,14 @@
 #define SERVO_PWM_MID_US        1500
 #define SERVO_PWM_MAX_US        2000
 
-#define SERVO_SLAT_CLOSED_ANGLE 0.0f
-#define SERVO_SLAT_OPEN_ANGLE   90.0f
+/* Calibrated safe range for the installed linkage. Avoid the MG996R endpoints. */
+#define SERVO_SLAT_CLOSED_ANGLE 60.0f
+#define SERVO_SLAT_OPEN_ANGLE   120.0f
+/* Slat tilt is blocked only when the blinds are effectively fully rolled up. */
+#define SERVO_TILT_BLOCKED_POSITION_MIN_PERCENT 95U
+#define SERVO_RAMP_DURATION_MS  3000U
+#define SERVO_RAMP_PERIOD_MS    40U
+#define SERVO_SETTLE_MS         400U
 
 #define SERVO_DUTY_MIN          ((SERVO_PWM_MIN_US * 4095) / 20000)
 #define SERVO_DUTY_MID          ((SERVO_PWM_MID_US * 4095) / 20000)
@@ -85,6 +91,8 @@
 
 /* Set to 1 to compile a servo-only ESP-IDF test app path in main.cpp. */
 #define SUNSENSE_SERVO_TEST_ONLY 0
+#define SUNSENSE_SERVO_TEST_FULL_RANGE 0
+#define SUNSENSE_SERVO_BOOT_EXERCISE 0
 #define SERVO_TEST_HOLD_MS       2000
 
 /* ============================================================================
@@ -169,6 +177,7 @@
 #define SERVO_SPEED_FAST        20
 
 #define MOTOR_RAMP_TIME         500
+#define MOTOR_TRAVEL_TIME_MS    120000U
 
 /* ============================================================================
  * RUNTIME PERSISTENCE / RECOVERY

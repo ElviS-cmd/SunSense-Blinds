@@ -16,11 +16,10 @@
  * SERVO CONSTANTS
  * ========================================================================== */
 
-#define SERVO_MIN_ANGLE_DEG       0.0f
-#define SERVO_MAX_ANGLE_DEG       180.0f
+#define SERVO_PHYSICAL_MIN_ANGLE_DEG 0.0f
+#define SERVO_PHYSICAL_MAX_ANGLE_DEG 180.0f
 #define SERVO_PWM_PERIOD_US       (1000000UL / SERVO_PWM_FREQ)
 #define SERVO_DUTY_MAX_12_BIT     ((1UL << 12) - 1UL)
-#define SERVO_DEFAULT_SETTLE_MS   700U
 #define SERVO_SAME_ANGLE_EPSILON  0.5f
 
 static const char *TAG = "Servo";
@@ -30,11 +29,11 @@ static const char *TAG = "Servo";
  * ========================================================================== */
 
 static float clamp_angle(float angle) {
-    if (angle < SERVO_MIN_ANGLE_DEG) {
-        return SERVO_MIN_ANGLE_DEG;
+    if (angle < SERVO_PHYSICAL_MIN_ANGLE_DEG) {
+        return SERVO_PHYSICAL_MIN_ANGLE_DEG;
     }
-    if (angle > SERVO_MAX_ANGLE_DEG) {
-        return SERVO_MAX_ANGLE_DEG;
+    if (angle > SERVO_PHYSICAL_MAX_ANGLE_DEG) {
+        return SERVO_PHYSICAL_MAX_ANGLE_DEG;
     }
     return angle;
 }
@@ -43,7 +42,7 @@ uint32_t servo_angle_to_duty(float angle) {
     angle = clamp_angle(angle);
 
     float pulse_us = (float)SERVO_PWM_MIN_US +
-        ((angle / SERVO_MAX_ANGLE_DEG) * (float)(SERVO_PWM_MAX_US - SERVO_PWM_MIN_US));
+        ((angle / SERVO_PHYSICAL_MAX_ANGLE_DEG) * (float)(SERVO_PWM_MAX_US - SERVO_PWM_MIN_US));
 
     return (uint32_t)lroundf((pulse_us * (float)SERVO_DUTY_MAX_12_BIT) /
                              (float)SERVO_PWM_PERIOD_US);
@@ -76,17 +75,83 @@ static bool servo_apply_pwm(ServoController_t *servo, float angle) {
     return true;
 }
 
+static float smoothstep(float progress) {
+    if (progress <= 0.0f) {
+        return 0.0f;
+    }
+    if (progress >= 1.0f) {
+        return 1.0f;
+    }
+    return progress * progress * (3.0f - (2.0f * progress));
+}
+
+static float ramp_angle_at_time(ServoController_t *servo, uint32_t current_time) {
+    if (servo->ramp_duration_ms == 0U) {
+        return servo->target_angle;
+    }
+
+    uint32_t elapsed = current_time - servo->command_time_ms;
+    float progress = (float)elapsed / (float)servo->ramp_duration_ms;
+    float eased = smoothstep(progress);
+    return servo->start_angle + ((servo->target_angle - servo->start_angle) * eased);
+}
+
+static bool servo_apply_ramp_sample(ServoController_t *servo, uint32_t current_time, const char *reason) {
+    float next_angle = ramp_angle_at_time(servo, current_time);
+    if (fabsf(next_angle - servo->target_angle) <= SERVO_SAME_ANGLE_EPSILON ||
+        (current_time - servo->command_time_ms) >= servo->ramp_duration_ms) {
+        next_angle = servo->target_angle;
+    }
+
+    if (!servo_apply_pwm(servo, next_angle)) {
+        servo->state = SERVO_IDLE;
+        servo->is_moving = false;
+        return false;
+    }
+
+    servo->current_angle = next_angle;
+    servo->last_step_time_ms = current_time;
+
+    ESP_LOGI(TAG,
+             "Ramp sample (%s): angle=%.1f target=%.1f duty=%lu",
+             reason,
+             servo->current_angle,
+             servo->target_angle,
+             (unsigned long)servo->current_duty);
+
+    if (fabsf(servo->current_angle - servo->target_angle) <= SERVO_SAME_ANGLE_EPSILON) {
+        servo->current_angle = servo->target_angle;
+        servo->target_pwm_applied = true;
+        servo->settle_start_time_ms = current_time;
+        ESP_LOGI(TAG,
+                 "Target PWM applied angle=%.1f duty=%lu",
+                 servo->target_angle,
+                 (unsigned long)servo->current_duty);
+    }
+
+    return true;
+}
+
 /* ============================================================================
  * INITIALIZATION
  * ========================================================================== */
 
 bool servo_init(ServoController_t *servo) {
+    if (servo == NULL) {
+        ESP_LOGE(TAG, "Init failed: servo pointer is NULL");
+        return false;
+    }
+
     memset(servo, 0, sizeof(ServoController_t));
-    servo->current_angle = SERVO_SLAT_CLOSED_ANGLE;
-    servo->target_angle = SERVO_SLAT_CLOSED_ANGLE;
-    servo->start_angle = SERVO_SLAT_CLOSED_ANGLE;
+    const float initial_angle = 90.0f;
+
+    servo->current_angle = initial_angle;
+    servo->target_angle = initial_angle;
+    servo->start_angle = initial_angle;
     servo->state = SERVO_IDLE;
-    servo->settle_duration_ms = SERVO_DEFAULT_SETTLE_MS;
+    servo->settle_duration_ms = SERVO_SETTLE_MS;
+    servo->ramp_duration_ms = SERVO_RAMP_DURATION_MS;
+    servo->target_pwm_applied = true;
     servo->is_moving = false;
 
     ledc_timer_config_t ledc_timer = {
@@ -103,7 +168,7 @@ bool servo_init(ServoController_t *servo) {
         return false;
     }
 
-    uint32_t initial_duty = servo_angle_to_duty(SERVO_SLAT_CLOSED_ANGLE);
+    uint32_t initial_duty = servo_angle_to_duty(initial_angle);
     ledc_channel_config_t ledc_channel = {
         .gpio_num = GPIO_SERVO,
         .speed_mode = SERVO_PWM_MODE,
@@ -131,7 +196,7 @@ bool servo_init(ServoController_t *servo) {
              SERVO_PWM_FREQ,
              SERVO_PWM_MIN_US,
              SERVO_PWM_MAX_US,
-             SERVO_SLAT_CLOSED_ANGLE,
+             initial_angle,
              (unsigned long)initial_duty);
     return true;
 }
@@ -150,6 +215,12 @@ void servo_move_to_ex(ServoController_t *servo,
     }
 
     float clamped_target = clamp_angle(target_angle);
+    if (fabsf(clamped_target - target_angle) > SERVO_SAME_ANGLE_EPSILON) {
+        ESP_LOGW(TAG, "Command angle clamped requested=%.1f applied=%.1f",
+                 target_angle,
+                 clamped_target);
+    }
+
     bool same_target = fabsf(clamped_target - servo->target_angle) <= SERVO_SAME_ANGLE_EPSILON;
 
     if (same_target && !force_reapply) {
@@ -161,23 +232,52 @@ void servo_move_to_ex(ServoController_t *servo,
         return;
     }
 
-    servo->start_angle = servo->target_angle;
+    if (same_target && force_reapply) {
+        servo->start_angle = servo->current_angle;
+        servo->target_angle = clamped_target;
+        servo->command_time_ms = current_time;
+        servo->last_step_time_ms = current_time;
+        servo->settle_start_time_ms = current_time;
+        servo->target_pwm_applied = true;
+        servo->state = SERVO_MOVING;
+        servo->is_moving = true;
+
+        if (!servo_apply_pwm(servo, clamped_target)) {
+            servo->state = SERVO_IDLE;
+            servo->is_moving = false;
+            return;
+        }
+
+        servo->current_angle = clamped_target;
+        servo->command_count++;
+        ESP_LOGI(TAG,
+                 "Commanded target=%.1f reapply duty=%lu command_count=%lu",
+                 servo->target_angle,
+                 (unsigned long)servo->current_duty,
+                 (unsigned long)servo->command_count);
+        return;
+    }
+
+    servo->start_angle = servo->current_angle;
     servo->target_angle = clamped_target;
     servo->command_time_ms = current_time;
+    servo->last_step_time_ms = current_time;
+    servo->settle_start_time_ms = current_time;
+    servo->ramp_duration_ms = SERVO_RAMP_DURATION_MS;
+    servo->target_pwm_applied = false;
     servo->state = SERVO_MOVING;
     servo->is_moving = true;
 
-    if (!servo_apply_pwm(servo, clamped_target)) {
-        servo->state = SERVO_IDLE;
-        servo->is_moving = false;
+    if (!servo_apply_ramp_sample(servo, current_time, "command")) {
         return;
     }
 
     servo->command_count++;
     ESP_LOGI(TAG,
-             "Commanded angle=%.1f start=%.1f duty=%lu force=%s command_count=%lu",
+             "Commanded target=%.1f start=%.1f current=%.1f duty=%lu force=%s command_count=%lu",
              servo->target_angle,
              servo->start_angle,
+             servo->current_angle,
              (unsigned long)servo->current_duty,
              force_reapply ? "yes" : "no",
              (unsigned long)servo->command_count);
@@ -185,6 +285,10 @@ void servo_move_to_ex(ServoController_t *servo,
 
 void servo_move_to(ServoController_t *servo, float target_angle, uint32_t current_time) {
     servo_move_to_ex(servo, target_angle, current_time, true);
+}
+
+void servo_move_to_if_changed(ServoController_t *servo, float target_angle, uint32_t current_time) {
+    servo_move_to_ex(servo, target_angle, current_time, false);
 }
 
 void servo_open(ServoController_t *servo, uint32_t current_time) {
@@ -208,20 +312,28 @@ void servo_update(ServoController_t *servo, uint32_t current_time) {
         return;
     }
 
-    uint32_t elapsed = current_time - servo->command_time_ms;
+    if (!servo->target_pwm_applied) {
+        if ((current_time - servo->last_step_time_ms) < SERVO_RAMP_PERIOD_MS) {
+            return;
+        }
+        servo_apply_ramp_sample(servo, current_time, "update");
+        return;
+    }
+
+    uint32_t elapsed = current_time - servo->settle_start_time_ms;
     if (elapsed < servo->settle_duration_ms) {
         return;
     }
 
-    servo->current_angle = servo->target_angle;
     servo->is_moving = false;
     servo->state = SERVO_IDLE;
 
     ESP_LOGI(TAG,
-             "Settled angle=%.1f duty=%lu elapsed=%lums",
+             "Settled angle=%.1f duty=%lu settle_elapsed=%lums total_elapsed=%lums",
              servo->current_angle,
              (unsigned long)servo->current_duty,
-             (unsigned long)elapsed);
+             (unsigned long)elapsed,
+             (unsigned long)(current_time - servo->command_time_ms));
 }
 
 /* ============================================================================

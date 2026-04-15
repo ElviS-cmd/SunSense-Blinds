@@ -17,7 +17,6 @@ idf_component_register(
         motor_controller
         led_controller
         ldr_controller
-        encoder_controller
         servo_controller
         microphone_controller
         voice_command_controller

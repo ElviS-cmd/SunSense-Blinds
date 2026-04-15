@@ -92,7 +92,7 @@ SystemConfig_t get_default_config(void) {
         .ldr_bright_threshold = 1200,
         .ldr_hysteresis = 600,
         .audio_threshold = 1000,
-        .motor_timeout_ms = 30000,
+        .motor_timeout_ms = 120000,
         .servo_speed_ms = 50,
         .enable_voice_commands = true
     };

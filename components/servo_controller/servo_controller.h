@@ -5,8 +5,8 @@
  * @date 2026
  *
  * Drives a standard positional servo using ESP-IDF LEDC PWM on GPIO10.
- * The controller tracks commanded angles only. It does not estimate physical
- * intermediate position because the MG996R provides no position feedback.
+ * The controller tracks PWM-commanded angles only. It can ramp the command in
+ * small deterministic steps, but it does not claim physical feedback.
  */
 
 #ifndef SERVO_CONTROLLER_H
@@ -25,15 +25,19 @@ extern "C" {
  * ========================================================================== */
 
 typedef struct {
-    float current_angle;            // Last commanded angle considered settled
+    float current_angle;            // Last angle written to PWM
     float target_angle;             // Last commanded target angle
     float start_angle;              // Commanded angle before latest move command
     uint32_t current_duty;          // Last LEDC duty written
     ServoState_t state;             // SERVO_MOVING until settle time expires
-    uint32_t command_time_ms;       // Time the latest PWM command was applied
+    uint32_t command_time_ms;       // Time the latest move command was accepted
+    uint32_t last_step_time_ms;     // Time the latest ramp sample was applied
+    uint32_t settle_start_time_ms;  // Time final target PWM was applied
+    uint32_t ramp_duration_ms;      // Duration of the current easing ramp
     uint32_t settle_duration_ms;    // Conservative no-feedback settle delay
     uint32_t command_count;         // Number of PWM commands applied
     bool command_valid;             // True after successful initialization
+    bool target_pwm_applied;        // True after final target PWM has been written
     bool is_moving;                 // Software settle timer is active
 } ServoController_t;
 
@@ -51,7 +55,7 @@ bool servo_init(ServoController_t *servo);
 /**
  * @brief Move servo to target angle and re-apply PWM even if target is unchanged.
  * @param servo Pointer to ServoController_t structure
- * @param target_angle Target angle in degrees (0-180)
+ * @param target_angle Target physical angle in degrees (0-180)
  * @param current_time Current time in milliseconds
  */
 void servo_move_to(ServoController_t *servo, float target_angle, uint32_t current_time);
@@ -59,7 +63,7 @@ void servo_move_to(ServoController_t *servo, float target_angle, uint32_t curren
 /**
  * @brief Move servo to target angle.
  * @param servo Pointer to ServoController_t structure
- * @param target_angle Target angle in degrees (0-180)
+ * @param target_angle Target physical angle in degrees (0-180)
  * @param current_time Current time in milliseconds
  * @param force_reapply If true, write PWM even when the target did not change
  */
@@ -67,6 +71,14 @@ void servo_move_to_ex(ServoController_t *servo,
                       float target_angle,
                       uint32_t current_time,
                       bool force_reapply);
+
+/**
+ * @brief Move servo only when the requested angle differs from the current target.
+ * @param servo Pointer to ServoController_t structure
+ * @param target_angle Target physical angle in degrees (0-180)
+ * @param current_time Current time in milliseconds
+ */
+void servo_move_to_if_changed(ServoController_t *servo, float target_angle, uint32_t current_time);
 
 /**
  * @brief Move servo to slats open angle.
@@ -90,7 +102,7 @@ void servo_close(ServoController_t *servo, uint32_t current_time);
 void servo_center(ServoController_t *servo, uint32_t current_time);
 
 /**
- * @brief Update software settle state. Does not estimate physical position.
+ * @brief Advance PWM ramp and update software settle state.
  * @param servo Pointer to ServoController_t structure
  * @param current_time Current time in milliseconds
  */
