@@ -13,7 +13,6 @@ extern "C" {
     #include "servo_controller.h"
     #include "mode_controller.h"
     #include "ldr_controller.h"
-    #include "encoder_controller.h"
     #include "led_controller.h"
 }
 
@@ -45,7 +44,6 @@ extern MotorController_t   motor;
 extern ServoController_t   servo;
 extern ModeController_t    mode;
 extern LDRController_t     ldr;
-extern EncoderController_t encoder;
 extern SystemState_t       system_state;
 extern SystemHealth_t      system_health;
 extern SystemConfig_t      system_config;
@@ -61,8 +59,13 @@ void unlock_state(void);
 void apply_manual_mode_locked(uint32_t current_time);
 void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot);
 void stop_motor_locked(uint32_t current_time);
+bool command_slat_locked(float angle,
+                         uint32_t current_time,
+                         bool force_reapply,
+                         const char *reason);
 void begin_open_sequence_locked(uint32_t current_time);
 void begin_close_sequence_locked(uint32_t current_time);
+void set_position_locked(uint8_t percent);
 void request_led_status_event(LEDStatusPattern_t pattern);
 void request_led_network_status_event(void);
 

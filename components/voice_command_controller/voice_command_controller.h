@@ -24,7 +24,7 @@ typedef struct {
     uint32_t utterance_start_time;
     uint32_t first_utterance_time;
     uint32_t last_active_time;
-    uint32_t cooldown_until_time;
+    uint32_t cooldown_start_time;   /* time cooldown began; 0 = no active cooldown */
     uint16_t last_level;
 } VoiceCommandController_t;
 

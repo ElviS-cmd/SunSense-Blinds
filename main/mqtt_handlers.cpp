@@ -30,8 +30,8 @@ static const char *cover_state_to_string(MotorState_t motor_state, float positio
 }
 
 static const char *slat_state_to_string(float angle) {
-    if (angle <= 5.0f)  return "closed";
-    if (angle >= 85.0f) return "open";
+    if (angle <= SERVO_SLAT_CLOSED_ANGLE + 1.0f) return "closed";
+    if (angle >= SERVO_SLAT_OPEN_ANGLE - 1.0f)   return "open";
     return "moving";
 }
 
@@ -211,6 +211,50 @@ static void publish_sensor_discovery(const char *object_id,
     mqtt_publish_retained(topic, payload);
 }
 
+static void clear_home_assistant_retained(void) {
+    /* Wipe every retained MQTT message this device has ever published so that
+     * Home Assistant completely forgets it.  Publishing an empty payload with
+     * retain=1 removes the retained message from the broker. */
+
+    static const struct { const char *component; const char *object_id; }
+    discovery_entries[] = {
+        { "cover",  "cover"          },
+        { "select", "mode"           },
+        { "sensor", "position"       },
+        { "sensor", "light_raw"      },
+        { "sensor", "light_filtered" },
+        { "sensor", "light_state"    },
+        { "sensor", "motor"          },
+        { "sensor", "slat"           },
+        { "sensor", "slat_position"  },
+        { "sensor", "health"         },
+        { "sensor", "rssi"           },
+    };
+
+    char topic[128] = {};
+    for (size_t i = 0; i < sizeof(discovery_entries) / sizeof(discovery_entries[0]); i++) {
+        build_discovery_topic(topic, sizeof(topic),
+                              discovery_entries[i].component,
+                              discovery_entries[i].object_id);
+        mqtt_publish_retained(topic, "");
+    }
+
+    mqtt_publish_retained(topics.state_cover,           "");
+    mqtt_publish_retained(topics.state_mode,            "");
+    mqtt_publish_retained(topics.state_position,        "");
+    mqtt_publish_retained(topics.state_light_raw,       "");
+    mqtt_publish_retained(topics.state_light_filtered,  "");
+    mqtt_publish_retained(topics.state_light_state,     "");
+    mqtt_publish_retained(topics.state_motor,           "");
+    mqtt_publish_retained(topics.state_slat,            "");
+    mqtt_publish_retained(topics.state_slat_position,   "");
+    mqtt_publish_retained(topics.state_health,          "");
+    mqtt_publish_retained(topics.state_network_online,  "");
+    mqtt_publish_retained(topics.state_network_rssi,    "");
+
+    ESP_LOGI(TAG, "Cleared all Home Assistant retained messages");
+}
+
 static void publish_home_assistant_discovery(void) {
     publish_cover_discovery();
     publish_select_discovery();
@@ -344,11 +388,13 @@ static void handle_position_command(const char *payload, int len) {
 
     apply_manual_mode_locked(current_time);
 
-    float current_position = system_health.encoder_ok ? encoder_get_percent(&encoder) : 0.0f;
-    if (requested_position > (int)(current_position + 1.0f)) {
+    PublishSnapshot_t snapshot = {};
+    collect_publish_snapshot_locked(&snapshot);
+    float current_position = snapshot.encoder_percent;
+    if ((float)requested_position > current_position + 1.0f) {
         begin_open_sequence_locked(current_time);
         manual_next_open = false;
-    } else if (requested_position < (int)(current_position - 1.0f)) {
+    } else if ((float)requested_position < current_position - 1.0f) {
         begin_close_sequence_locked(current_time);
         manual_next_open = true;
     } else {
@@ -371,17 +417,17 @@ static void handle_slat_command(const char *payload, int len) {
     apply_manual_mode_locked(current_time);
 
     if ((len == 4) && (strncmp(payload, "OPEN", 4) == 0)) {
-        servo_open(&servo, current_time);
+        command_slat_locked(SERVO_SLAT_OPEN_ANGLE, current_time, true, "mqtt slat open");
     } else if ((len == 5) && (strncmp(payload, "CLOSE", 5) == 0)) {
-        servo_close(&servo, current_time);
+        command_slat_locked(SERVO_SLAT_CLOSED_ANGLE, current_time, true, "mqtt slat close");
     } else if ((len == 4) && (strncmp(payload, "STOP", 4) == 0)) {
-        servo_move_to(&servo, servo_get_angle(&servo), current_time);
+        command_slat_locked(servo_get_target(&servo), current_time, true, "mqtt slat stop");
     } else if (len > 0 && len < (int) sizeof(buffer)) {
         memcpy(buffer, payload, len);
         char *endptr = NULL;
         long requested_percent = strtol(buffer, &endptr, 10);
         if (endptr != buffer && requested_percent >= 0 && requested_percent <= 100) {
-            servo_move_to(&servo, slat_percent_to_angle(requested_percent), current_time);
+            command_slat_locked(slat_percent_to_angle(requested_percent), current_time, true, "mqtt slat percent");
         } else {
             ESP_LOGW(TAG, "Ignoring invalid slat command");
         }
@@ -412,6 +458,35 @@ static void handle_system_command(const char *payload, int len) {
         } else {
             ESP_LOGE(TAG, "Failed to clear network settings for reprovision");
         }
+
+    } else if ((len == 8) && (strncmp(payload, "RESET_HA", 8) == 0)) {
+        /* Remove every retained MQTT message from the broker so Home Assistant
+         * forgets this device, then re-publish discovery so it registers fresh. */
+        ESP_LOGI(TAG, "RESET_HA: wiping retained messages and re-announcing to Home Assistant");
+        clear_home_assistant_retained();
+        publish_home_assistant_discovery();
+        publish_state_if_ready();
+
+    } else if ((len == 10) && (strncmp(payload, "SET_CLOSED", 10) == 0)) {
+        /* Calibration: user has physically moved the blinds to the fully-closed
+         * position and is telling the firmware to treat it as 0%. */
+        ESP_LOGI(TAG, "SET_CLOSED: marking current position as 0%% (fully closed)");
+        if (lock_state()) {
+            set_position_locked(0U);
+            unlock_state();
+        }
+        publish_state_if_ready();
+
+    } else if ((len == 8) && (strncmp(payload, "SET_OPEN", 8) == 0)) {
+        /* Calibration: user has physically moved the blinds to the fully-open
+         * position and is telling the firmware to treat it as 100%. */
+        ESP_LOGI(TAG, "SET_OPEN: marking current position as 100%% (fully open)");
+        if (lock_state()) {
+            set_position_locked(100U);
+            unlock_state();
+        }
+        publish_state_if_ready();
+
     } else {
         ESP_LOGW(TAG, "Ignoring unknown system command");
     }

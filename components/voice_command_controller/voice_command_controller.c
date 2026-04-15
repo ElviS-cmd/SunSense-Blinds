@@ -67,7 +67,9 @@ SystemCommand_t voice_command_update(VoiceCommandController_t *voice,
 
     voice->last_level = audio_level;
 
-    if (current_time < voice->cooldown_until_time) {
+    /* Use elapsed-based check so uint32 wraparound (every ~49 days) is harmless. */
+    if (voice->cooldown_start_time != 0U &&
+        (current_time - voice->cooldown_start_time) < VOICE_COMMAND_COOLDOWN_MS) {
         return COMMAND_NONE;
     }
 
@@ -136,6 +138,6 @@ SystemCommand_t voice_command_update(VoiceCommandController_t *voice,
              voice->utterance_count);
 
     reset_sequence(voice);
-    voice->cooldown_until_time = current_time + VOICE_COMMAND_COOLDOWN_MS;
+    voice->cooldown_start_time = current_time;
     return command;
 }

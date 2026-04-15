@@ -32,7 +32,6 @@ ModeController_t     mode      = {};
 MotorController_t    motor     = {};
 LEDController_t      led       = {};
 LDRController_t      ldr       = {};
-EncoderController_t  encoder   = {};
 ServoController_t    servo     = {};
 MicrophoneController_t microphone = {};
 VoiceCommandController_t voice = {};
@@ -47,14 +46,6 @@ SystemConfig_t system_config = {};
 bool           auto_command_pending = false;
 bool           manual_next_open     = true;
 
-typedef enum {
-    CONTROL_SEQUENCE_NONE = 0,
-    CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN,
-    CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE,
-    CONTROL_SEQUENCE_MOVE_OPEN,
-    CONTROL_SEQUENCE_MOVE_CLOSE,
-} ControlSequenceState_t;
-
 /* ============================================================================
  * TASK HANDLES AND SYNCHRONISATION
  * ========================================================================== */
@@ -64,11 +55,9 @@ static TaskHandle_t     task_mode       = NULL;
 static TaskHandle_t     task_motor      = NULL;
 static TaskHandle_t     task_led        = NULL;
 static TaskHandle_t     task_ldr        = NULL;
-static TaskHandle_t     task_encoder    = NULL;
 static TaskHandle_t     task_microphone = NULL;
 static SemaphoreHandle_t state_mutex    = NULL;
 static RuntimeStateController_t runtime_state = {};
-static ControlSequenceState_t   control_sequence = CONTROL_SEQUENCE_NONE;
 static bool                     runtime_position_valid = false;
 static uint8_t                  runtime_position_percent = 0U;
 static uint8_t                  last_saved_position_percent = 0U;
@@ -91,14 +80,36 @@ static uint8_t clamp_percent_to_u8(float percent) {
     return static_cast<uint8_t>(percent + 0.5f);
 }
 
+static void update_time_based_position_locked(uint32_t current_time) {
+    MotorState_t motor_state = motor_get_state(&motor);
+    if (motor_state == MOTOR_STOP || !runtime_position_valid) {
+        return;
+    }
+
+    uint32_t elapsed = motor_get_elapsed_time(&motor, current_time);
+    uint32_t travel_time = system_config.motor_timeout_ms > 0U
+        ? system_config.motor_timeout_ms
+        : MOTOR_TRAVEL_TIME_MS;
+
+    if (elapsed >= travel_time) {
+        runtime_position_percent = (motor_state == MOTOR_OPENING) ? 100U : 0U;
+        return;
+    }
+
+    float travel_delta = (float)elapsed * 100.0f / (float)travel_time;
+    float position = (float)last_saved_position_percent;
+    if (motor_state == MOTOR_OPENING) {
+        position += travel_delta;
+    } else if (motor_state == MOTOR_CLOSING) {
+        position -= travel_delta;
+    }
+
+    runtime_position_percent = clamp_percent_to_u8(position);
+}
+
 static bool get_position_snapshot_locked(uint8_t *position_percent) {
     if (position_percent == NULL) {
         return false;
-    }
-
-    if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
-        *position_percent = clamp_percent_to_u8(encoder_get_percent(&encoder));
-        return true;
     }
 
     if (runtime_position_valid) {
@@ -107,6 +118,43 @@ static bool get_position_snapshot_locked(uint8_t *position_percent) {
     }
 
     return false;
+}
+
+static bool servo_tilt_allowed_locked(const char *reason) {
+    uint8_t position_percent = 0U;
+    if (!get_position_snapshot_locked(&position_percent)) {
+        ESP_LOGW(TAG, "Slat command allowed (%s): cover position unknown", reason);
+        return true;
+    }
+
+    if (position_percent >= SERVO_TILT_BLOCKED_POSITION_MIN_PERCENT) {
+        ESP_LOGW(TAG,
+                 "Slat command blocked (%s): blinds are fully rolled up position=%u%%",
+                 reason,
+                 position_percent);
+        return false;
+    }
+
+    return true;
+}
+
+static float clamp_slat_angle(float angle) {
+    float min_angle = SERVO_SLAT_CLOSED_ANGLE;
+    float max_angle = SERVO_SLAT_OPEN_ANGLE;
+
+    if (min_angle > max_angle) {
+        float tmp = min_angle;
+        min_angle = max_angle;
+        max_angle = tmp;
+    }
+
+    if (angle < min_angle) {
+        return min_angle;
+    }
+    if (angle > max_angle) {
+        return max_angle;
+    }
+    return angle;
 }
 
 static RuntimeStateSnapshot_t build_runtime_snapshot_locked(void) {
@@ -131,19 +179,47 @@ static void request_runtime_save_locked(void) {
 }
 
 static void clear_control_sequence_locked(void) {
-    control_sequence = CONTROL_SEQUENCE_NONE;
+    /* Servo commands are immediate now; no deferred servo/motor sequence remains. */
+}
+
+bool command_slat_locked(float angle,
+                         uint32_t current_time,
+                         bool force_reapply,
+                         const char *reason) {
+    if (!system_health.servo_ok) {
+        ESP_LOGW(TAG, "Slat command skipped (%s): servo unavailable", reason);
+        return false;
+    }
+
+    if (motor_is_running(&motor)) {
+        ESP_LOGW(TAG, "Slat command skipped (%s): motor is running", reason);
+        return false;
+    }
+
+    if (!servo_tilt_allowed_locked(reason)) {
+        return false;
+    }
+
+    angle = clamp_slat_angle(angle);
+    if (force_reapply) {
+        servo_move_to(&servo, angle, current_time);
+    } else {
+        servo_move_to_if_changed(&servo, angle, current_time);
+    }
+    request_runtime_save_locked();
+    ESP_LOGI(TAG, "Slat command applied (%s): angle=%.1f", reason, angle);
+    return true;
 }
 
 static void update_servo_for_light_locked(uint32_t current_time) {
-    if (!system_health.servo_ok || mode_get_current(&mode) != MODE_AUTO) {
+    if (mode_get_current(&mode) != MODE_AUTO) {
         return;
     }
 
     if (ldr_is_bright(&ldr)) {
-        servo_open(&servo, current_time);
-        request_runtime_save_locked();
+        command_slat_locked(SERVO_SLAT_OPEN_ANGLE, current_time, false, "auto bright");
     } else if (ldr_is_dark(&ldr)) {
-        servo_close(&servo, current_time);
+        command_slat_locked(SERVO_SLAT_CLOSED_ANGLE, current_time, false, "auto dark");
         request_runtime_save_locked();
     }
 }
@@ -167,7 +243,12 @@ static bool led_pattern_is_network(LEDStatusPattern_t pattern) {
 }
 
 void request_led_status_event(LEDStatusPattern_t pattern) {
-    if (led_pattern_is_motion(led_requested_pattern) && led_pattern_is_network(pattern)) {
+    /* Motion patterns take priority over non-critical network patterns (NORMAL,
+     * RECONNECTING), but OFFLINE always overrides so the user can see the
+     * device has lost connectivity even while the blind is moving. */
+    if (led_pattern_is_motion(led_requested_pattern) &&
+        led_pattern_is_network(pattern) &&
+        pattern != LED_STATUS_OFFLINE) {
         return;
     }
 
@@ -201,9 +282,7 @@ void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot) {
     snapshot->system        = system_state;
     snapshot->ldr_raw       = system_health.ldr_ok ? ldr_get_raw(&ldr)       : 0;
     snapshot->ldr_filtered  = system_health.ldr_ok ? ldr_get_filtered(&ldr)  : 0;
-    if (system_health.encoder_ok) {
-        snapshot->encoder_percent = encoder_get_percent(&encoder);
-    } else if (get_position_snapshot_locked(&position_percent)) {
+    if (get_position_snapshot_locked(&position_percent)) {
         snapshot->encoder_percent = position_percent;
     } else {
         snapshot->encoder_percent = 0.0f;
@@ -213,6 +292,7 @@ void collect_publish_snapshot_locked(PublishSnapshot_t *snapshot) {
 
 void stop_motor_locked(uint32_t current_time) {
     if (motor_is_running(&motor)) {
+        update_time_based_position_locked(current_time);
         motor_stop(&motor, current_time);
         system_state.motor_state = motor_get_state(&motor);
         request_runtime_save_locked();
@@ -221,65 +301,51 @@ void stop_motor_locked(uint32_t current_time) {
 }
 
 void begin_open_sequence_locked(uint32_t current_time) {
-    if (system_health.servo_ok) {
-        servo_open(&servo, current_time);
-        control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN;
-        return;
-    }
+    command_slat_locked(SERVO_SLAT_OPEN_ANGLE, current_time, true, "cover open");
 
-    control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
+    if (system_health.motor_ok) {
+        update_time_based_position_locked(current_time);
+        last_saved_position_percent = runtime_position_percent;
+        motor_set_opening(&motor, current_time);
+        system_state.motor_state = motor_get_state(&motor);
+        request_led_status_event(LED_STATUS_OPENING);
+        request_runtime_save_locked();
+        ESP_LOGI(TAG, "Open command applied: servo_target=%.1f motor=%s",
+                 system_health.servo_ok ? servo_get_target(&servo) : -1.0f,
+                 motor_state_to_string(system_state.motor_state));
+    }
 }
 
 void begin_close_sequence_locked(uint32_t current_time) {
-    if (system_health.servo_ok) {
-        servo_close(&servo, current_time);
-        control_sequence = CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE;
-        return;
-    }
+    command_slat_locked(SERVO_SLAT_CLOSED_ANGLE, current_time, true, "cover close");
 
-    control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
+    if (system_health.motor_ok) {
+        update_time_based_position_locked(current_time);
+        last_saved_position_percent = runtime_position_percent;
+        motor_set_closing(&motor, current_time);
+        system_state.motor_state = motor_get_state(&motor);
+        request_led_status_event(LED_STATUS_CLOSING);
+        request_runtime_save_locked();
+        ESP_LOGI(TAG, "Close command applied: servo_target=%.1f motor=%s",
+                 system_health.servo_ok ? servo_get_target(&servo) : -1.0f,
+                 motor_state_to_string(system_state.motor_state));
+    }
 }
 
-static void advance_control_sequence_locked(uint32_t current_time) {
-    switch (control_sequence) {
-        case CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_OPEN:
-            servo_update(&servo, current_time);
-            if (servo_at_target(&servo)) {
-                control_sequence = CONTROL_SEQUENCE_MOVE_OPEN;
-            }
-            break;
-        case CONTROL_SEQUENCE_WAIT_SERVO_SETTLE_CLOSE:
-            servo_update(&servo, current_time);
-            if (servo_at_target(&servo)) {
-                control_sequence = CONTROL_SEQUENCE_MOVE_CLOSE;
-            }
-            break;
-        case CONTROL_SEQUENCE_MOVE_OPEN:
-            if (!motor_is_running(&motor)) {
-                motor_set_opening(&motor, current_time);
-                system_state.motor_state = motor_get_state(&motor);
-                request_led_status_event(LED_STATUS_OPENING);
-                control_sequence = CONTROL_SEQUENCE_NONE;
-            }
-            break;
-        case CONTROL_SEQUENCE_MOVE_CLOSE:
-            if (!motor_is_running(&motor)) {
-                motor_set_closing(&motor, current_time);
-                system_state.motor_state = motor_get_state(&motor);
-                request_led_status_event(LED_STATUS_CLOSING);
-                control_sequence = CONTROL_SEQUENCE_NONE;
-            }
-            break;
-        case CONTROL_SEQUENCE_NONE:
-        default:
-            break;
-    }
+void set_position_locked(uint8_t percent) {
+    runtime_position_percent      = percent;
+    runtime_position_valid        = true;
+    last_saved_position_percent   = percent;
+    request_runtime_save_locked();
+    ESP_LOGI(TAG, "Position manually set to %u%%", percent);
 }
 
 static void maybe_persist_runtime_state_locked(uint32_t current_time) {
     if (!runtime_state.initialized) {
         return;
     }
+
+    update_time_based_position_locked(current_time);
 
     uint8_t position_percent = 0U;
     bool position_valid = get_position_snapshot_locked(&position_percent);
@@ -317,13 +383,19 @@ static void maybe_persist_runtime_state_locked(uint32_t current_time) {
 
 static void restore_runtime_state(void) {
     if (!runtime_state_init(&runtime_state)) {
-        ESP_LOGW(TAG, "Runtime state init failed");
+        ESP_LOGW(TAG, "Runtime state init failed; assuming position 0%% (fully closed)");
+        runtime_position_valid = true;
+        runtime_position_percent = 0U;
+        last_saved_position_percent = 0U;
         return;
     }
 
     RuntimeStateSnapshot_t snapshot = {};
     if (!runtime_state_load(&runtime_state, &snapshot)) {
         ESP_LOGI(TAG, "No saved runtime state found");
+        runtime_position_valid = true;
+        runtime_position_percent = 0U;
+        last_saved_position_percent = 0U;
         return;
     }
 
@@ -338,8 +410,7 @@ static void restore_runtime_state(void) {
     }
 
     if (system_health.servo_ok && snapshot.slat_angle_valid) {
-        servo_move_to(&servo, snapshot.slat_angle_deg, 0U);
-        servo_update(&servo, 0U);
+        command_slat_locked(clamp_slat_angle(snapshot.slat_angle_deg), 0U, false, "runtime restore");
     }
 
     system_state.current_mode = mode_get_current(&mode);
@@ -503,27 +574,24 @@ static void task_motor_handler(void *pvParameters) {
             MotorState_t motor_state     = motor_get_state(&motor);
 
             if (motor_state != MOTOR_STOP) {
-                bool timeout_reached  = (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
-                bool endpoint_reached = false;
+                update_time_based_position_locked(current_time);
+                bool timeout_reached = (system_config.motor_timeout_ms > 0U) &&
+                                       (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
 
-                if (system_health.encoder_ok && encoder_is_healthy(&encoder)) {
-                    float position_percent = encoder_get_percent(&encoder);
-                    endpoint_reached =
-                        ((motor_state == MOTOR_OPENING) && (position_percent >= 99.0f)) ||
-                        ((motor_state == MOTOR_CLOSING) && (position_percent <= 1.0f));
-                }
-
-                if (timeout_reached || endpoint_reached) {
+                if (timeout_reached) {
+                    uint32_t elapsed = motor_get_elapsed_time(&motor, current_time);
+                    runtime_position_percent = (motor_state == MOTOR_OPENING) ? 100U : 0U;
+                    runtime_position_valid = true;
                     stop_motor_locked(current_time);
-                    if (timeout_reached) {
-                        request_led_status_event(LED_STATUS_FAULT);
-                    }
+                    request_runtime_save_locked();
+                    ESP_LOGI(TAG,
+                             "Time-based motor travel complete: direction=%s position=%u%% elapsed=%lums",
+                             motor_state_to_string(motor_state),
+                             runtime_position_percent,
+                             (unsigned long)elapsed);
                 }
             } else {
-                advance_control_sequence_locked(current_time);
-
-                if ((control_sequence == CONTROL_SEQUENCE_NONE) &&
-                    (current_mode == MODE_AUTO) &&
+                if ((current_mode == MODE_AUTO) &&
                     (current_time >= auto_actions_enabled_after_ms) &&
                     auto_command_pending &&
                     system_health.ldr_ok) {
@@ -629,34 +697,6 @@ static void task_ldr_handler(void *pvParameters) {
     }
 }
 
-static void task_encoder_handler(void *pvParameters) {
-    (void) pvParameters;
-    ESP_LOGI(TAG, "Encoder task started");
-
-    TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period   = pdMS_TO_TICKS(TASK_PERIOD_ENCODER);
-    uint32_t last_log         = 0;
-
-    while (1) {
-        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        bool updated          = false;
-        float angle           = 0.0f;
-
-        if (system_health.encoder_ok && lock_state()) {
-            updated = encoder_update(&encoder, current_time);
-            angle   = encoder_get_degrees(&encoder);
-            unlock_state();
-        }
-
-        if (updated && (current_time - last_log > 1000U)) {
-            ESP_LOGI(TAG, "Encoder: %.1f°", angle);
-            last_log = current_time;
-        }
-
-        vTaskDelayUntil(&last_wake_time, period);
-    }
-}
-
 static void task_microphone_handler(void *pvParameters) {
     (void) pvParameters;
     ESP_LOGI(TAG, "Microphone task started");
@@ -722,6 +762,45 @@ static bool create_task_checked(TaskFunction_t task_fn,
     return true;
 }
 
+static void run_servo_boot_exercise(void) {
+#if SUNSENSE_SERVO_BOOT_EXERCISE
+    if (!system_health.servo_ok) {
+        ESP_LOGW(TAG, "Skipping servo boot exercise: servo unavailable");
+        return;
+    }
+
+    ESP_LOGW(TAG, "Running servo boot exercise before mode/LDR/motor integration");
+    const float exercise_angles[] = {
+        90.0f,
+        SERVO_SLAT_OPEN_ANGLE,
+        90.0f,
+        SERVO_SLAT_CLOSED_ANGLE,
+        90.0f,
+    };
+    const size_t exercise_count = sizeof(exercise_angles) / sizeof(exercise_angles[0]);
+
+    for (size_t i = 0; i < exercise_count; ++i) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        float angle = exercise_angles[i];
+
+        ESP_LOGI(TAG, "Servo boot exercise command angle=%.1f duty=%lu",
+                 angle,
+                 (unsigned long)servo_angle_to_duty(angle));
+        servo_move_to(&servo, angle, current_time);
+
+        while (servo_is_moving(&servo)) {
+            vTaskDelay(pdMS_TO_TICKS(TASK_PERIOD_MOTOR));
+            current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            servo_update(&servo, current_time);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(SERVO_TEST_HOLD_MS));
+    }
+
+    ESP_LOGW(TAG, "Servo boot exercise complete");
+#endif
+}
+
 static bool initialize_all_controllers(void) {
     ESP_LOGI(TAG, "Initializing controllers...");
 
@@ -732,10 +811,12 @@ static bool initialize_all_controllers(void) {
     system_health.motor_ok     = motor_init(&motor);
     system_health.led_ok       = led_init(&led);
     system_health.ldr_ok       = ldr_init(&ldr);
-    system_health.encoder_ok   = encoder_init(&encoder);
+    system_health.encoder_ok   = false;
     system_health.servo_ok     = servo_init(&servo);
     system_health.microphone_ok = microphone_init(&microphone);
     voice_command_init(&voice);
+
+    run_servo_boot_exercise();
     restore_runtime_state();
 
     system_state.current_mode  = mode_get_current(&mode);
@@ -746,7 +827,6 @@ static bool initialize_all_controllers(void) {
         system_health.motor_ok  &&
         system_health.led_ok    &&
         system_health.ldr_ok    &&
-        system_health.encoder_ok &&
         system_health.servo_ok  &&
         system_health.microphone_ok;
 
@@ -757,7 +837,7 @@ static bool initialize_all_controllers(void) {
     ESP_LOGI(TAG, "Motor:      %s", system_health.motor_ok      ? "OK" : "FAILED");
     ESP_LOGI(TAG, "LED:        %s", system_health.led_ok        ? "OK" : "FAILED");
     ESP_LOGI(TAG, "LDR:        %s", system_health.ldr_ok        ? "OK" : "FAILED");
-    ESP_LOGI(TAG, "Encoder:    %s", system_health.encoder_ok    ? "OK" : "FAILED");
+    ESP_LOGI(TAG, "Encoder:    DISABLED (time-based travel)");
     ESP_LOGI(TAG, "Servo:      %s", system_health.servo_ok      ? "OK" : "FAILED");
     ESP_LOGI(TAG, "Microphone: %s", system_health.microphone_ok ? "OK" : "FAILED");
 
@@ -773,7 +853,6 @@ static bool create_all_tasks(void) {
         create_task_checked(task_motor_handler,      "motor_task",      TASK_STACK_MOTOR,      TASK_PRIORITY_MOTOR,      &task_motor,      1) &&
         create_task_checked(task_led_handler,        "led_task",        TASK_STACK_LED,        TASK_PRIORITY_LED,        &task_led,        0) &&
         create_task_checked(task_ldr_handler,        "ldr_task",        TASK_STACK_LDR,        TASK_PRIORITY_LDR,        &task_ldr,        0) &&
-        create_task_checked(task_encoder_handler,    "encoder_task",    TASK_STACK_ENCODER,    TASK_PRIORITY_ENCODER,    &task_encoder,    0) &&
         create_task_checked(task_microphone_handler, "microphone_task", TASK_STACK_MICROPHONE, TASK_PRIORITY_MICROPHONE, &task_microphone, 1);
 }
 
@@ -790,7 +869,11 @@ static void run_servo_only_test(void) {
         }
     }
 
+#if SUNSENSE_SERVO_TEST_FULL_RANGE
     const float test_angles[] = {0.0f, 90.0f, 180.0f, 90.0f};
+#else
+    const float test_angles[] = {90.0f, 60.0f, 90.0f, 120.0f};
+#endif
     const size_t test_angle_count = sizeof(test_angles) / sizeof(test_angles[0]);
     size_t index = 0U;
 
@@ -803,9 +886,11 @@ static void run_servo_only_test(void) {
                  (unsigned long)servo_angle_to_duty(angle));
         servo_move_to(&test_servo, angle, current_time);
 
-        vTaskDelay(pdMS_TO_TICKS(SERVO_TEST_HOLD_MS));
-        current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        servo_update(&test_servo, current_time);
+        while (servo_is_moving(&test_servo)) {
+            vTaskDelay(pdMS_TO_TICKS(TASK_PERIOD_MOTOR));
+            current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            servo_update(&test_servo, current_time);
+        }
 
         ESP_LOGI(TAG, "Servo-only test settled current=%.1f target=%.1f duty=%lu state=%s",
                  servo_get_angle(&test_servo),
@@ -813,6 +898,7 @@ static void run_servo_only_test(void) {
                  (unsigned long)servo_get_duty(&test_servo),
                  servo_is_moving(&test_servo) ? "moving" : "idle");
 
+        vTaskDelay(pdMS_TO_TICKS(SERVO_TEST_HOLD_MS));
         index = (index + 1U) % test_angle_count;
     }
 }
@@ -841,13 +927,17 @@ extern "C" void app_main(void) {
         return;
     }
 
+    /* Set settle deadline BEFORE tasks start so no task ever reads the
+     * initial value of 0 and bypasses the startup settle window. */
+    auto_actions_enabled_after_ms =
+        (xTaskGetTickCount() * portTICK_PERIOD_MS) + AUTO_STARTUP_SETTLE_MS;
+
     if (!create_all_tasks()) {
         ESP_LOGE(TAG, "Task creation failed, refusing to continue");
         return;
     }
 
     initialize_network();
-    auto_actions_enabled_after_ms = AUTO_STARTUP_SETTLE_MS;
 
     uint32_t last_log_time     = 0;
     uint32_t last_publish_time = 0;
