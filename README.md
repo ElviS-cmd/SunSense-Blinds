@@ -304,7 +304,6 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - `components/`: reusable controllers for hardware and runtime subsystems
 - `include/`: shared GPIO configuration and system types
 - `tools/`: BLE provisioning helper scripts
-- `docs/`: project reference documents
 
 ## Notes
 
