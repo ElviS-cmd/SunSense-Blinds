@@ -1,0 +1,296 @@
+/**
+ * @file tasks.cpp
+ * @brief FreeRTOS task loops for SunSense input, automation, motor, LED, LDR, and microphone.
+ */
+
+#include "tasks.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "gpio_config.h"
+#include "app_controller.h"
+#include "app_state.h"
+
+static const char *TAG = "SunSense";
+
+static TaskHandle_t task_button = NULL;
+static TaskHandle_t task_mode = NULL;
+static TaskHandle_t task_motor = NULL;
+static TaskHandle_t task_led = NULL;
+static TaskHandle_t task_ldr = NULL;
+static TaskHandle_t task_microphone = NULL;
+
+static void task_button_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "Button task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_BUTTON);
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        button_update(&button, current_time);
+
+        ButtonAction_t action = button_get_action(&button);
+        if (action != BUTTON_ACTION_NONE) {
+            queue_system_event(EVENT_BUTTON_PRESSED, current_time, static_cast<uint16_t>(action));
+            button_clear_action(&button);
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_mode_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "Mode task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MODE);
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool changed = false;
+        OperatingMode_t current_mode = MODE_AUTO;
+        bool event_pending = system_event_ready();
+
+        if (lock_state()) {
+            if (event_pending) {
+                SystemEvent_Queue_t event = {};
+                while (receive_system_event(&event)) {
+                    process_system_event_locked(&event);
+                }
+            }
+
+            mode_update_idle(&mode, current_time);
+            changed = mode_changed(&mode);
+            current_mode = mode_get_current(&mode);
+            system_state.current_mode = current_mode;
+
+            if (changed && current_mode == MODE_AUTO) {
+                clear_control_sequence_locked();
+                stop_motor_locked(current_time);
+                auto_command_pending = system_health.ldr_ok;
+                manual_next_open = true;
+                update_servo_for_light_locked(current_time);
+            }
+
+            unlock_state();
+        }
+
+        if (changed) {
+            ESP_LOGI(TAG, "Mode changed to: %s", mode_to_string(current_mode));
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_motor_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "Motor task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MOTOR);
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        if (lock_state()) {
+            OperatingMode_t current_mode = mode_get_current(&mode);
+            MotorState_t motor_state = motor_get_state(&motor);
+
+            if (motor_state != MOTOR_STOP) {
+                update_time_based_position_locked(current_time);
+                bool timeout_reached = (system_config.motor_timeout_ms > 0U) &&
+                                       (motor_get_elapsed_time(&motor, current_time) >= system_config.motor_timeout_ms);
+
+                if (timeout_reached) {
+                    uint32_t elapsed = motor_get_elapsed_time(&motor, current_time);
+                    mark_motor_travel_complete_locked(motor_state);
+                    stop_motor_locked(current_time);
+                    request_runtime_save_locked();
+                    ESP_LOGI(TAG,
+                             "Time-based motor travel complete: direction=%s elapsed=%lums",
+                             motor_state_to_string(motor_state),
+                             (unsigned long)elapsed);
+                }
+            } else {
+                if ((current_mode == MODE_AUTO) &&
+                    auto_actions_enabled(current_time) &&
+                    auto_command_pending &&
+                    system_health.ldr_ok) {
+                    if (ldr_is_bright(&ldr)) {
+                        begin_open_sequence_locked(current_time);
+                    } else if (ldr_is_dark(&ldr)) {
+                        begin_close_sequence_locked(current_time);
+                    }
+                    auto_command_pending = false;
+                }
+            }
+
+            maybe_persist_runtime_state_locked(current_time);
+            system_state.motor_state = motor_get_state(&motor);
+            unlock_state();
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_led_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "LED task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_LED);
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool healthy = false;
+
+        if (lock_state()) {
+            healthy = system_state.system_healthy;
+            unlock_state();
+        }
+
+        if (system_health.led_ok) {
+            LEDStatusPattern_t pattern = healthy
+                ? get_requested_led_pattern()
+                : LED_STATUS_FAULT;
+
+            led_set_status_pattern(&led, pattern, current_time);
+            led_update(&led, current_time);
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_ldr_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "LDR task started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_LDR);
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool level_changed = false;
+        LightLevel_t light_level = LIGHT_DARK;
+        uint16_t raw_level = 0;
+        uint16_t filtered_level = 0;
+
+        if (system_health.ldr_ok && lock_state()) {
+            ldr_update(&ldr, current_time);
+            level_changed = ldr_level_changed(&ldr);
+            light_level = ldr_get_level(&ldr);
+            raw_level = ldr_get_raw(&ldr);
+            filtered_level = ldr_get_filtered(&ldr);
+            system_state.light_level = light_level;
+            unlock_state();
+        }
+
+        if (level_changed) {
+            queue_system_event(EVENT_LIGHT_CHANGED, current_time, static_cast<uint16_t>(light_level));
+        }
+
+        ESP_LOGI(TAG, "LDR raw: %u filtered: %u level: %s",
+                 raw_level,
+                 filtered_level,
+                 light_level_to_string(light_level));
+
+        if (level_changed) {
+            ESP_LOGI(TAG, "Light level changed to: %s", light_level_to_string(light_level));
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static void task_microphone_handler(void *pvParameters) {
+    (void) pvParameters;
+    ESP_LOGI(TAG, "Microphone task started");
+    ESP_LOGI(TAG, "Voice commands: 1 utterance=open, 2=close, 3=stop, 4=auto");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TASK_PERIOD_MICROPHONE);
+    uint32_t last_log = 0;
+
+    while (1) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        if (system_health.microphone_ok) {
+            microphone_update(&microphone, current_time);
+
+            if (microphone_is_buffer_ready(&microphone)) {
+                uint16_t level = microphone_get_level(&microphone);
+                SystemCommand_t voice_command = COMMAND_NONE;
+
+                if (system_config.enable_voice_commands) {
+                    voice_command = voice_command_update(&voice,
+                                                         level,
+                                                         system_config.audio_threshold,
+                                                         current_time);
+                }
+
+                if (current_time - last_log > 2000U) {
+                    ESP_LOGI(TAG, "Audio level: %u", level);
+                    last_log = current_time;
+                }
+
+                microphone_clear_buffer(&microphone);
+
+                if (voice_command != COMMAND_NONE) {
+                    queue_system_event(EVENT_MICROPHONE_READY,
+                                       current_time,
+                                       static_cast<uint16_t>(voice_command));
+                }
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+static bool create_task_checked(TaskFunction_t task_fn,
+                                const char *name,
+                                uint32_t stack_size,
+                                UBaseType_t priority,
+                                TaskHandle_t *handle,
+                                BaseType_t core_id) {
+    BaseType_t result = xTaskCreatePinnedToCore(task_fn, name, stack_size, NULL, priority, handle, core_id);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create task: %s", name);
+        return false;
+    }
+    return true;
+}
+
+bool create_all_tasks(void) {
+    ESP_LOGI(TAG, "Creating FreeRTOS tasks...");
+
+    bool tasks_ok =
+        create_task_checked(task_button_handler, "button_task", TASK_STACK_BUTTON, TASK_PRIORITY_BUTTON, &task_button, 0) &&
+        create_task_checked(task_mode_handler, "mode_task", TASK_STACK_MODE, TASK_PRIORITY_MODE, &task_mode, 0) &&
+        create_task_checked(task_motor_handler, "motor_task", TASK_STACK_MOTOR, TASK_PRIORITY_MOTOR, &task_motor, 1) &&
+        create_task_checked(task_led_handler, "led_task", TASK_STACK_LED, TASK_PRIORITY_LED, &task_led, 0) &&
+        create_task_checked(task_ldr_handler, "ldr_task", TASK_STACK_LDR, TASK_PRIORITY_LDR, &task_ldr, 0);
+
+    if (!tasks_ok) {
+        return false;
+    }
+
+    if (sunsense_local_only_enabled()) {
+        ESP_LOGI(TAG, "Microphone task skipped in local-only mode");
+        return true;
+    }
+
+    return create_task_checked(task_microphone_handler,
+                               "microphone_task",
+                               TASK_STACK_MICROPHONE,
+                               TASK_PRIORITY_MICROPHONE,
+                               &task_microphone,
+                               1);
+}
