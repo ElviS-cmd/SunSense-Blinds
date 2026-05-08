@@ -1,5 +1,12 @@
 idf_component_register(
-    SRCS "main.cpp" "network.cpp" "mqtt_handlers.cpp"
+    SRCS
+        "main.cpp"
+        "app_state.cpp"
+        "app_controller.cpp"
+        "tasks.cpp"
+        "system_init.cpp"
+        "network.cpp"
+        "mqtt_handlers.cpp"
     INCLUDE_DIRS "." "../include"
     REQUIRES 
         driver
